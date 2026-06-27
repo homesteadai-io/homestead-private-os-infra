@@ -13,7 +13,8 @@ The Keep remains Adam's second-brain OKF library/context graph. This runtime rea
 - Runtime repo: `https://github.com/homesteadai-io/homestead-private-os-infra.git`
 - Keep repo: `https://github.com/homesteadai-io/The-Keep.git`
 - Runtime branch deployed: `codex/hetzner-v0-deploy`
-- Runtime commit deployed: `2150ec1`
+- Runtime behavior commit deployed: `2150ec1`
+- Latest branch checkout may include handoff-only commits after that.
 
 ## Server
 
