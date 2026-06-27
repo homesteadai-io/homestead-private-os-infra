@@ -13,7 +13,7 @@ The Keep remains Adam's second-brain OKF library/context graph. This runtime rea
 - Runtime repo: `https://github.com/homesteadai-io/homestead-private-os-infra.git`
 - Keep repo: `https://github.com/homesteadai-io/The-Keep.git`
 - Runtime branch deployed: `codex/hetzner-v0-deploy`
-- Runtime commit deployed before doc/restart-policy follow-up: `0ea4a52`
+- Runtime commit deployed: `2150ec1`
 
 ## Server
 
@@ -208,15 +208,17 @@ curl http://100.112.20.36:8088/api/repo/status
 curl http://100.112.20.36:8088/mcp/tools
 ```
 
-After this branch is committed and pushed, pull it on the server and redeploy so all services get `restart: unless-stopped`:
+Restart policy is now active on all five Compose services:
 
-```bash
-cd /opt/homestead/runtime
-git pull --ff-only
-ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```text
+homestead-api: unless-stopped
+homestead-mcp: unless-stopped
+repo-sync: unless-stopped
+receipt-worker: unless-stopped
+caddy: unless-stopped
 ```
 
-Do not merge/tag until laptop Tailscale acceptance passes.
+Do not merge/tag until laptop Tailscale acceptance passes. Reboot survival proof is also recommended before tagging if Adam is ready for brief downtime.
 
 ## Not Yet Added
 
