@@ -39,6 +39,8 @@ HOMESTEAD_REPO_PATH="${HOMESTEAD_REPO_PATH:-/workspace/keep}"
 RECEIPTS_DIR="${RECEIPTS_DIR:-/data/receipts}"
 CADDY_HTTP_BIND="${CADDY_HTTP_BIND:-127.0.0.1}"
 CADDY_HTTPS_BIND="${CADDY_HTTPS_BIND:-127.0.0.1}"
+CADDY_HTTP_PORT="${CADDY_HTTP_PORT:-80}"
+CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT:-443}"
 
 [ "$HOMESTEAD_REPO_PATH" = "/workspace/keep" ] || fail "HOMESTEAD_REPO_PATH should be /workspace/keep for v0 container mounts"
 [ "$RECEIPTS_DIR" = "/data/receipts" ] || fail "RECEIPTS_DIR should be /data/receipts for v0 container mounts"
@@ -65,6 +67,14 @@ if [ "$CADDY_HTTP_BIND" = "0.0.0.0" ] || [ "$CADDY_HTTPS_BIND" = "0.0.0.0" ]; th
   echo "preflight warning: Caddy is configured for public bind. v0 API/MCP are unauthenticated."
 fi
 
+if ss -tln 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${CADDY_HTTP_PORT}$"; then
+  echo "preflight warning: port $CADDY_HTTP_PORT already appears to be listening on this server"
+fi
+
+if ss -tln 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${CADDY_HTTPS_PORT}$"; then
+  echo "preflight warning: port $CADDY_HTTPS_PORT already appears to be listening on this server"
+fi
+
 if command -v tailscale >/dev/null 2>&1; then
   tailscale status >/dev/null 2>&1 || echo "preflight warning: tailscale command exists but tailnet status is unavailable"
 else
@@ -78,3 +88,5 @@ echo "  KEEP_REPO_HOST_PATH=$KEEP_REPO_HOST_PATH"
 echo "  HOMESTEAD_DATA_PATH=$HOMESTEAD_DATA_PATH"
 echo "  CADDY_HTTP_BIND=$CADDY_HTTP_BIND"
 echo "  CADDY_HTTPS_BIND=$CADDY_HTTPS_BIND"
+echo "  CADDY_HTTP_PORT=$CADDY_HTTP_PORT"
+echo "  CADDY_HTTPS_PORT=$CADDY_HTTPS_PORT"

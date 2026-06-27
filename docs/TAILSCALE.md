@@ -64,6 +64,15 @@ curl http://localhost:8080/api/repo/status
 curl http://localhost:8080/mcp/tools
 ```
 
+If Homestead is bound to alternate loopback port `8088`, tunnel that port:
+
+```bash
+ssh -L 8088:localhost:8088 root@<server-ip>
+curl http://localhost:8088/health
+curl http://localhost:8088/api/repo/status
+curl http://localhost:8088/mcp/tools
+```
+
 ## Firewall Posture
 
 For v0:

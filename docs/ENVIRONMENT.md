@@ -23,6 +23,8 @@ Never commit real env files.
 | `HOMESTEAD_API_URL` | internal API URL used by MCP facade |
 | `CADDY_HTTP_BIND` | host address for Caddy port 80 |
 | `CADDY_HTTPS_BIND` | host address for Caddy port 443 |
+| `CADDY_HTTP_PORT` | host port mapped to Caddy container port 80 |
+| `CADDY_HTTPS_PORT` | host port mapped to Caddy container port 443 |
 
 ## Hetzner v0 Values
 
@@ -37,6 +39,8 @@ HOMESTEAD_API_URL=http://homestead-api:8000
 HOMESTEAD_MCP_URL=http://homestead-mcp:8010
 CADDY_HTTP_BIND=127.0.0.1
 CADDY_HTTPS_BIND=127.0.0.1
+CADDY_HTTP_PORT=80
+CADDY_HTTPS_PORT=443
 ```
 
 Set `CADDY_HTTP_BIND` and `CADDY_HTTPS_BIND` to the server's Tailscale IP for direct tailnet access, or to `0.0.0.0` only for intentional public exposure.

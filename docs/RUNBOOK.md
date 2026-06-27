@@ -103,6 +103,17 @@ HOMESTEAD_API_URL=http://homestead-api:8000
 HOMESTEAD_MCP_URL=http://homestead-mcp:8010
 CADDY_HTTP_BIND=127.0.0.1
 CADDY_HTTPS_BIND=127.0.0.1
+CADDY_HTTP_PORT=80
+CADDY_HTTPS_PORT=443
+```
+
+If another service already owns ports 80/443, keep Homestead private on alternate loopback ports:
+
+```bash
+CADDY_HTTP_BIND=127.0.0.1
+CADDY_HTTPS_BIND=127.0.0.1
+CADDY_HTTP_PORT=8088
+CADDY_HTTPS_PORT=8443
 ```
 
 For direct Tailscale access, replace both Caddy bind values with the server's Tailscale IP from `tailscale ip -4`.
@@ -166,6 +177,14 @@ Expected services:
 curl http://localhost/health
 curl http://localhost/api/repo/status
 curl http://localhost/mcp/tools
+```
+
+If using alternate loopback ports:
+
+```bash
+curl http://localhost:8088/health
+curl http://localhost:8088/api/repo/status
+curl http://localhost:8088/mcp/tools
 ```
 
 If `CADDY_HTTP_BIND` is set to a Tailscale IP, use that IP instead of `localhost` from Adam's laptop.
