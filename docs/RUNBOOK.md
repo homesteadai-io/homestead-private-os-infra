@@ -1,28 +1,33 @@
 # Runbook
 
-## Local Run
+This runbook deploys Homestead Private OS Infra v0 to the Hetzner CPX51 node.
 
-```bash
-cd homestead-private-os-infra
-cp infra/.env.example infra/.env
-docker compose --env-file infra/.env -f infra/docker-compose.yml up --build
+v0 is deployment-only:
+- no OpenRouter routing yet
+- no LiteLLM
+- no GPU provider
+- no Langfuse
+- no SMTP/email
+- no autonomous runner
+
+## Server Layout
+
+```text
+/opt/homestead/
+  runtime/    # clone of homesteadai-io/homestead-private-os-infra
+  the-keep/   # Adam's second-brain OKF library/context graph checkout
+  data/       # receipts, logs, persistent runtime data
+  backups/    # backup output
+  secrets/    # local-only env files, not committed
 ```
 
-In `infra/.env`, set:
+Runtime env file:
 
-```bash
-KEEP_REPO_HOST_PATH=/absolute/path/to/the/repo/to/search
-HOMESTEAD_DATA_HOST_PATH=/absolute/path/to/local/data
+```text
+/opt/homestead/secrets/runtime.env
 ```
 
-For local Windows testing, Docker accepts paths like:
-
-```bash
-KEEP_REPO_HOST_PATH=C:/Users/Adam/OneDrive/Desktop/Homestead AI.io
-HOMESTEAD_DATA_HOST_PATH=C:/Users/Adam/OneDrive/Desktop/homestead-private-os-infra/data
-```
-
-## Hetzner First Boot
+## One-Time Hetzner Bootstrap
 
 SSH into the CPX51 node:
 
@@ -30,66 +35,166 @@ SSH into the CPX51 node:
 ssh root@<server-ip>
 ```
 
-Install base dependencies:
+Create the Homestead folders and install Docker:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<your-org>/<this-repo>/main/infra/scripts/bootstrap-server.sh | bash
+apt-get update
+apt-get install -y ca-certificates curl git
+curl -fsSL https://get.docker.com | sh
+mkdir -p /opt/homestead/runtime /opt/homestead/the-keep /opt/homestead/data /opt/homestead/backups
+install -d -m 0700 /opt/homestead/secrets
 ```
 
-Or clone first and run locally:
+Clone the runtime repo:
 
 ```bash
-git clone git@github.com:<your-org>/<this-repo>.git /opt/homestead/private-os-infra
-cd /opt/homestead/private-os-infra
-sudo bash infra/scripts/bootstrap-server.sh
+git clone https://github.com/homesteadai-io/homestead-private-os-infra.git /opt/homestead/runtime
+cd /opt/homestead/runtime
+git checkout main
 ```
 
-Clone The Keep/source repo:
+If deploying this branch before merge, use:
 
 ```bash
-git clone git@github.com:<your-org>/<the-keep-repo>.git /opt/homestead/the-keep
+cd /opt/homestead/runtime
+git fetch origin codex/hetzner-v0-deploy
+git checkout codex/hetzner-v0-deploy
 ```
 
-Create env:
+Alternative bootstrap script after cloning:
 
 ```bash
-cd /opt/homestead/private-os-infra
-cp infra/.env.example infra/.env
-nano infra/.env
+cd /opt/homestead/runtime
+bash infra/scripts/bootstrap-server.sh
 ```
 
-Use:
+## Clone The Keep
+
+Clone Adam's Keep/OKF context graph into `/opt/homestead/the-keep`.
 
 ```bash
-KEEP_REPO_HOST_PATH=/opt/homestead/the-keep
-HOMESTEAD_DATA_HOST_PATH=/opt/homestead/data
+git clone <the-keep-repo-url> /opt/homestead/the-keep
+```
+
+Verify it is a git work tree:
+
+```bash
+git -C /opt/homestead/the-keep status --short --branch
+```
+
+## Create Runtime Env
+
+```bash
+cp /opt/homestead/runtime/infra/.env.example /opt/homestead/secrets/runtime.env
+chmod 600 /opt/homestead/secrets/runtime.env
+nano /opt/homestead/secrets/runtime.env
+```
+
+Use these v0 values:
+
+```bash
+HOMESTEAD_ENV=production
 HOMESTEAD_REPO_PATH=/workspace/keep
 RECEIPTS_DIR=/data/receipts
+KEEP_REPO_HOST_PATH=/opt/homestead/the-keep
+HOMESTEAD_DATA_PATH=/opt/homestead/data
+HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env
+HOMESTEAD_API_URL=http://homestead-api:8000
+HOMESTEAD_MCP_URL=http://homestead-mcp:8010
+CADDY_HTTP_BIND=127.0.0.1
+CADDY_HTTPS_BIND=127.0.0.1
 ```
 
-Deploy:
+For direct Tailscale access, replace both Caddy bind values with the server's Tailscale IP from `tailscale ip -4`.
+
+For public DNS testing, use `0.0.0.0` only after accepting that v0 API/MCP surfaces are unauthenticated:
 
 ```bash
-bash infra/scripts/deploy.sh
+CADDY_HTTP_BIND=0.0.0.0
+CADDY_HTTPS_BIND=0.0.0.0
 ```
 
-## Tailscale / DNS v0
+Leave model, Langfuse, and SMTP values as placeholders in v0.
 
-v0 assumes private access through Tailscale. Public exposure should stay minimal.
+## Preflight
 
-Recommended v0 DNS:
-- `status.homesteadai.io` -> server public IP or Tailscale-accessible route
-- `api.homesteadai.io` -> server public IP or Tailscale-accessible route
-- `mcp.homesteadai.io` -> server public IP or Tailscale-accessible route
+```bash
+cd /opt/homestead/runtime
+ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/preflight.sh
+```
 
-If these names are public DNS records, restrict access at the network layer before putting sensitive data behind them. Caddy is configured in `infra/caddy/Caddyfile`; hard auth/Tailscale ACLs are a follow-up if public exposure becomes real.
+Expected:
+
+```text
+preflight ok
+```
+
+Preflight checks:
+- Docker exists
+- Docker Compose plugin exists
+- runtime env file exists
+- expected folders exist
+- `/opt/homestead/the-keep` exists
+- `/opt/homestead/the-keep` is a git work tree
+- `/opt/homestead/data` is writable
+- Docker Compose config resolves
+
+## Deploy
+
+```bash
+cd /opt/homestead/runtime
+ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+Check services:
+
+```bash
+HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env \
+docker compose --env-file /opt/homestead/secrets/runtime.env -f infra/docker-compose.yml ps
+```
+
+Expected services:
+- `homestead-api`
+- `homestead-mcp`
+- `repo-sync`
+- `receipt-worker`
+- `caddy`
+
+## Server-Local Smoke Tests
+
+```bash
+curl http://localhost/health
+curl http://localhost/api/repo/status
+curl http://localhost/mcp/tools
+```
+
+If `CADDY_HTTP_BIND` is set to a Tailscale IP, use that IP instead of `localhost` from Adam's laptop.
+
+## Deploy Updates
+
+```bash
+ssh root@<server-ip>
+cd /opt/homestead/runtime
+git fetch origin
+git checkout main
+git pull --ff-only
+ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+For a pre-merge deployment branch:
+
+```bash
+ssh root@<server-ip>
+cd /opt/homestead/runtime
+git fetch origin codex/hetzner-v0-deploy
+git checkout codex/hetzner-v0-deploy
+ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
 
 ## Backups
 
-Back up runtime data:
-
 ```bash
-bash infra/scripts/backup.sh
+DATA_ROOT=/opt/homestead/data BACKUP_ROOT=/opt/homestead/backups bash /opt/homestead/runtime/infra/scripts/backup.sh
 ```
 
 Default output:
@@ -98,12 +203,12 @@ Default output:
 /opt/homestead/backups/homestead-data-<timestamp>.tgz
 ```
 
-## Deploy Update
+## Stop Stack
+
+This stops containers but does not delete data:
 
 ```bash
-ssh root@<server-ip>
-cd /opt/homestead/private-os-infra
-git pull --ff-only
-bash infra/scripts/deploy.sh
+cd /opt/homestead/runtime
+HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env \
+docker compose --env-file /opt/homestead/secrets/runtime.env -f infra/docker-compose.yml stop
 ```
-

@@ -23,11 +23,16 @@ docker compose --env-file infra/.env -f infra/docker-compose.yml up --build
 Then verify:
 
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/repo/status
+curl http://localhost/health
+curl http://localhost/api/repo/status
+curl http://localhost/mcp/tools
 ```
 
 Full deployment notes live in [`docs/RUNBOOK.md`](docs/RUNBOOK.md). Exact verification commands live in [`docs/ACCEPTANCE-TESTS.md`](docs/ACCEPTANCE-TESTS.md).
+
+DNS and private access notes:
+- [`docs/DNS.md`](docs/DNS.md)
+- [`docs/TAILSCALE.md`](docs/TAILSCALE.md)
 
 ## Services
 

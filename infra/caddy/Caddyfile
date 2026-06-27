@@ -17,7 +17,27 @@ mcp.homesteadai.io {
 	reverse_proxy homestead-mcp:8010
 }
 
-http://localhost {
+node.homesteadai.io {
+	handle /health {
+		reverse_proxy homestead-api:8000
+	}
+
+	handle_path /api/* {
+		reverse_proxy homestead-api:8000
+	}
+
+	handle_path /mcp/* {
+		reverse_proxy homestead-mcp:8010
+	}
+
+	respond / "Homestead Private OS v0 node" 200
+}
+
+http://localhost, http://:80 {
+	handle /health {
+		reverse_proxy homestead-api:8000
+	}
+
 	handle_path /api/* {
 		reverse_proxy homestead-api:8000
 	}
@@ -28,4 +48,3 @@ http://localhost {
 
 	respond / "Homestead Private OS v0 local proxy" 200
 }
-
