@@ -1,0 +1,31 @@
+{
+	email admin@homesteadai.io
+}
+
+# v0 assumes private access through Tailscale. Keep DNS exposure minimal.
+
+status.homesteadai.io {
+	respond / "Homestead Private OS v0 OK" 200
+	reverse_proxy /health homestead-api:8000
+}
+
+api.homesteadai.io {
+	reverse_proxy homestead-api:8000
+}
+
+mcp.homesteadai.io {
+	reverse_proxy homestead-mcp:8010
+}
+
+http://localhost {
+	handle_path /api/* {
+		reverse_proxy homestead-api:8000
+	}
+
+	handle_path /mcp/* {
+		reverse_proxy homestead-mcp:8010
+	}
+
+	respond / "Homestead Private OS v0 local proxy" 200
+}
+

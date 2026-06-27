@@ -1,0 +1,83 @@
+name: homestead-private-os
+
+services:
+  homestead-api:
+    build:
+      context: ..
+      dockerfile: services/homestead-api/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      HOMESTEAD_REPO_PATH: ${HOMESTEAD_REPO_PATH:-/workspace/keep}
+      RECEIPTS_DIR: ${RECEIPTS_DIR:-/data/receipts}
+    volumes:
+      - ${KEEP_REPO_HOST_PATH:-../}:/workspace/keep
+      - ${HOMESTEAD_DATA_HOST_PATH:-../data}:/data
+    ports:
+      - "8080:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  homestead-mcp:
+    build:
+      context: ..
+      dockerfile: services/homestead-mcp/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      HOMESTEAD_API_URL: ${HOMESTEAD_API_URL:-http://homestead-api:8000}
+    ports:
+      - "8010:8010"
+    depends_on:
+      homestead-api:
+        condition: service_healthy
+
+  repo-sync:
+    build:
+      context: ..
+      dockerfile: services/repo-sync/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      HOMESTEAD_REPO_PATH: ${HOMESTEAD_REPO_PATH:-/workspace/keep}
+      REPO_SYNC_INTERVAL_SECONDS: 600
+    volumes:
+      - ${KEEP_REPO_HOST_PATH:-../}:/workspace/keep
+    depends_on:
+      homestead-api:
+        condition: service_healthy
+
+  receipt-worker:
+    build:
+      context: ..
+      dockerfile: services/receipt-worker/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      RECEIPTS_DIR: ${RECEIPTS_DIR:-/data/receipts}
+      RECEIPT_QUEUE_DIR: /data/receipt-queue
+    volumes:
+      - ${HOMESTEAD_DATA_HOST_PATH:-../data}:/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - homestead-api
+      - homestead-mcp
+
+volumes:
+  caddy_data:
+  caddy_config:
