@@ -37,11 +37,13 @@ HOMESTEAD_DATA_PATH=/opt/homestead/data
 HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env
 HOMESTEAD_API_URL=http://homestead-api:8000
 HOMESTEAD_MCP_URL=http://homestead-mcp:8010
-CADDY_HTTP_BIND=127.0.0.1
-CADDY_HTTPS_BIND=127.0.0.1
-CADDY_HTTP_PORT=80
-CADDY_HTTPS_PORT=443
+CADDY_HTTP_BIND=100.112.20.36
+CADDY_HTTPS_BIND=100.112.20.36
+CADDY_HTTP_PORT=8088
+CADDY_HTTPS_PORT=8443
 ```
+
+The live v0 node keeps existing Nginx on public `80/443`, so Homestead Caddy binds privately to the Tailscale IP on `8088/8443`.
 
 Set `CADDY_HTTP_BIND` and `CADDY_HTTPS_BIND` to the server's Tailscale IP for direct tailnet access, or to `0.0.0.0` only for intentional public exposure.
 

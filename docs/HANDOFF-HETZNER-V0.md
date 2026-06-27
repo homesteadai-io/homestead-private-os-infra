@@ -13,14 +13,16 @@ The Keep remains Adam's second-brain OKF library/context graph. This runtime rea
 - Runtime repo: `https://github.com/homesteadai-io/homestead-private-os-infra.git`
 - Keep repo: `https://github.com/homesteadai-io/The-Keep.git`
 - Runtime branch deployed: `codex/hetzner-v0-deploy`
-- Runtime commit deployed: `4913e35`
+- Runtime commit deployed before doc/restart-policy follow-up: `0ea4a52`
 
 ## Server
 
 - Hetzner IPv4: `5.78.206.130`
 - SSH user: `root`
-- Host observed over SSH: `Laptop`
-- Tailscale: not installed as of this handoff
+- Host observed over SSH: `keryke`
+- Tailscale: installed and authenticated
+- Tailscale hostname: `homestead-cpx51`
+- Tailscale IPv4: `100.112.20.36`
 
 ## Server Layout
 
@@ -66,20 +68,20 @@ repo-sync
 Current exposure:
 
 ```text
-127.0.0.1:8088 -> caddy:80
-127.0.0.1:8443 -> caddy:443
+100.112.20.36:8088 -> caddy:80
+100.112.20.36:8443 -> caddy:443
 ```
 
-API and MCP are internal-only Docker ports. Public `5.78.206.130:8088` was verified closed from Adam's laptop.
+API and MCP are internal-only Docker ports. Public `5.78.206.130:8088` was verified closed.
 
 Existing server Nginx already owns public `80/443`; do not overwrite it unless Adam explicitly chooses a public reverse-proxy migration.
 
 ## Disk Notes
 
-Root disk is tight:
+Root disk was critical at 98%. It is now below the critical threshold after archiving a large OpenClaw promotion log and vacuuming systemd journals:
 
 ```text
-/dev/sda1 38G, about 98% used
+/dev/sda1 38G, about 88% used
 ```
 
 Mounted Hetzner volume has room:
@@ -90,29 +92,52 @@ Mounted Hetzner volume has room:
 
 Homestead was intentionally placed on the mounted volume via `/opt/homestead` symlink to avoid filling root.
 
-## Live Acceptance Proof
-
-Server-local base URL:
+Docker was already on the mounted volume:
 
 ```text
-http://127.0.0.1:8088
+/var/lib/docker -> /mnt/HC_Volume_105361821/docker
+DockerRootDir=/mnt/HC_Volume_105361821/docker
+```
+
+Docker log rotation is configured in `/etc/docker/daemon.json` with `max-size=10m` and `max-file=3`.
+
+Archived root-pressure file:
+
+```text
+/mnt/HC_Volume_105361821/attic/root-disk-relief-20260627T231151Z/promotion-log.jsonl.gz
+```
+
+## Live Acceptance Proof
+
+Private Tailscale-bound base URL:
+
+```text
+http://100.112.20.36:8088
 ```
 
 Verified:
 
 - `GET /health` returned OK
 - `GET /api/repo/status` returned The Keep branch `main`, dirty `false`
-- `POST /api/search` returned `count: 3`
-- `POST /api/context-pack` returned `3` files
+- `POST /api/search` returned `count: 5`
+- `POST /api/context-pack` returned `5` files
 - `POST /api/receipt/create` wrote Markdown and JSON receipts
 - `GET /mcp/tools` returned 5 tools
 - `POST /mcp/call` with `homestead.repo_status` returned branch `main`
+- Public `5.78.206.130:8088` remained closed
+
+Not yet passed from Adam's laptop:
+
+- Direct laptop curl to `http://100.112.20.36:8088/...`
+- Local probe showed the Windows client was not on Tailscale/path; it attempted Wi-Fi source `10.0.0.184`
 
 Receipt proof:
 
 ```text
 /opt/homestead/data/receipts/2026-06-27/hetzner-live-20260627T224952Z.md
 /opt/homestead/data/receipts/2026-06-27/hetzner-live-20260627T224952Z.json
+/opt/homestead/data/receipts/2026-06-27/hetzner-tailscale-acceptance-20260627T232456Z.md
+/opt/homestead/data/receipts/2026-06-27/hetzner-tailscale-acceptance-20260627T232456Z.json
 ```
 
 Laptop SSH tunnel proof also passed:
@@ -142,7 +167,7 @@ docker compose --env-file /opt/homestead/secrets/runtime.env -f infra/docker-com
 Server-local tests:
 
 ```bash
-BASE=http://127.0.0.1:8088
+BASE=http://100.112.20.36:8088
 curl "$BASE/health"
 curl "$BASE/api/repo/status"
 curl "$BASE/mcp/tools"
@@ -175,29 +200,23 @@ curl http://127.0.0.1:18088/mcp/tools
 
 ## Next Best Move
 
-Install/auth Tailscale and bind Homestead Caddy to the Tailscale IP.
+Install or sign into Tailscale on Adam's laptop, then rerun the laptop acceptance checks without SSH tunnel:
 
-Planned mode:
+```powershell
+curl http://100.112.20.36:8088/health
+curl http://100.112.20.36:8088/api/repo/status
+curl http://100.112.20.36:8088/mcp/tools
+```
+
+After this branch is committed and pushed, pull it on the server and redeploy so all services get `restart: unless-stopped`:
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-tailscale up --ssh --hostname homestead-cpx51
-TAILSCALE_IP="$(tailscale ip -4)"
-sed -i "s/^CADDY_HTTP_BIND=.*/CADDY_HTTP_BIND=$TAILSCALE_IP/" /opt/homestead/secrets/runtime.env
-sed -i "s/^CADDY_HTTPS_BIND=.*/CADDY_HTTPS_BIND=$TAILSCALE_IP/" /opt/homestead/secrets/runtime.env
-sed -i "s/^CADDY_HTTP_PORT=.*/CADDY_HTTP_PORT=80/" /opt/homestead/secrets/runtime.env
-sed -i "s/^CADDY_HTTPS_PORT=.*/CADDY_HTTPS_PORT=443/" /opt/homestead/secrets/runtime.env
 cd /opt/homestead/runtime
+git pull --ff-only
 ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
 ```
 
-Then Adam can use:
-
-```text
-http://<tailscale-ip>/health
-http://<tailscale-ip>/api/repo/status
-http://<tailscale-ip>/mcp/tools
-```
+Do not merge/tag until laptop Tailscale acceptance passes.
 
 ## Not Yet Added
 
@@ -212,4 +231,3 @@ Do not assume these exist:
 - autonomous runner
 
 Task 3 is OpenRouter routing after this deployment foundation.
-

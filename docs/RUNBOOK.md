@@ -10,6 +10,28 @@ v0 is deployment-only:
 - no SMTP/email
 - no autonomous runner
 
+## Live v0 Topology
+
+As of the Hetzner v0 deployment:
+
+- Hetzner is the always-on node. Adam's laptop is only a client.
+- The SSH tunnel is a fallback doorway, not the production access path.
+- Existing Nginx owns public `80/443`; do not replace or reconfigure it for v0.
+- Homestead Caddy is private on the Tailscale IP with host ports `8088/8443`.
+- Public `:8088` should remain unavailable from the internet.
+- Tailscale is the normal private access path for laptop access, and later phone access.
+- Future automation runner work must run on Hetzner through Docker Compose or systemd, not on Adam's laptop.
+
+Current live values:
+
+```text
+Server public IP: 5.78.206.130
+Tailscale host: homestead-cpx51
+Tailscale IP: 100.112.20.36
+Homestead HTTP: http://100.112.20.36:8088
+Homestead HTTPS bind: 100.112.20.36:8443
+```
+
 ## Server Layout
 
 ```text
@@ -25,6 +47,25 @@ Runtime env file:
 
 ```text
 /opt/homestead/secrets/runtime.env
+```
+
+Docker data is on the mounted Hetzner volume:
+
+```text
+/var/lib/docker -> /mnt/HC_Volume_105361821/docker
+```
+
+The live Docker daemon config also pins the data root and rotates JSON logs:
+
+```json
+{
+  "data-root": "/mnt/HC_Volume_105361821/docker",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
 ```
 
 ## One-Time Hetzner Bootstrap
@@ -116,7 +157,14 @@ CADDY_HTTP_PORT=8088
 CADDY_HTTPS_PORT=8443
 ```
 
-For direct Tailscale access, replace both Caddy bind values with the server's Tailscale IP from `tailscale ip -4`.
+For direct Tailscale access when public Nginx already owns `80/443`, replace both Caddy bind values with the server's Tailscale IP from `tailscale ip -4` and keep the private host ports:
+
+```bash
+CADDY_HTTP_BIND=<tailscale-ip>
+CADDY_HTTPS_BIND=<tailscale-ip>
+CADDY_HTTP_PORT=8088
+CADDY_HTTPS_PORT=8443
+```
 
 For public DNS testing, use `0.0.0.0` only after accepting that v0 API/MCP surfaces are unauthenticated:
 
@@ -187,7 +235,43 @@ curl http://localhost:8088/api/repo/status
 curl http://localhost:8088/mcp/tools
 ```
 
-If `CADDY_HTTP_BIND` is set to a Tailscale IP, use that IP instead of `localhost` from Adam's laptop.
+If `CADDY_HTTP_BIND` is set to a Tailscale IP and `CADDY_HTTP_PORT=8088`, use the private Tailscale URL from Adam's laptop while it is signed into the same tailnet:
+
+```powershell
+curl http://<tailscale-ip>:8088/health
+curl http://<tailscale-ip>:8088/api/repo/status
+curl http://<tailscale-ip>:8088/mcp/tools
+```
+
+If the laptop is not signed into Tailscale, these requests should time out. That is expected and is better than accidentally exposing the private OS spine.
+
+## Always-On Runtime Check
+
+The stack should not depend on Adam's laptop. Docker services use `restart: unless-stopped`, and Docker itself is enabled through systemd.
+
+Use this after deployment changes:
+
+```bash
+docker ps
+cd /opt/homestead/runtime
+HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env \
+docker compose --env-file /opt/homestead/secrets/runtime.env -f infra/docker-compose.yml ps
+curl http://<tailscale-ip>:8088/health
+```
+
+Full reboot proof, when Adam is ready for the brief downtime:
+
+```bash
+reboot
+```
+
+After the server returns:
+
+```bash
+ssh root@5.78.206.130
+docker ps
+curl http://100.112.20.36:8088/health
+```
 
 ## Deploy Updates
 

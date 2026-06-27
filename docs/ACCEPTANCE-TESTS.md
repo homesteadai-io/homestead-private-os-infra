@@ -9,7 +9,9 @@ Replace:
 - `<mcp-host>` with `mcp.homesteadai.io` when public DNS is intentionally enabled
 - `<node-host>` with `node.homesteadai.io` when public DNS is intentionally enabled
 
-Default v0 is private. Public DNS tests require `CADDY_HTTP_BIND=0.0.0.0` and `CADDY_HTTPS_BIND=0.0.0.0`, which exposes unauthenticated v0 surfaces.
+Default v0 is private. The live Hetzner v0 shape keeps existing Nginx on public `80/443` and binds Homestead Caddy to the Tailscale IP on `8088/8443`.
+
+Public DNS tests require `CADDY_HTTP_BIND=0.0.0.0` and `CADDY_HTTPS_BIND=0.0.0.0`, which exposes unauthenticated v0 surfaces. Do not use public DNS mode for the private OS spine without a separate access-control decision.
 
 ## 1. Local Unit Tests
 
@@ -72,6 +74,14 @@ receipt-worker
 repo-sync
 ```
 
+All Compose services should use:
+
+```yaml
+restart: unless-stopped
+```
+
+This keeps the runtime on Hetzner. Adam's laptop is only a client; the SSH tunnel is a temporary fallback, not a runtime dependency.
+
 ## 4. Health Through Caddy
 
 From the Hetzner server:
@@ -83,7 +93,7 @@ curl http://localhost/health
 From Adam's laptop after DNS/Tailscale is ready:
 
 ```bash
-curl http://<tailscale-ip>/health
+curl http://<tailscale-ip>:8088/health
 ```
 
 Public DNS mode:
@@ -110,7 +120,7 @@ curl http://localhost/api/repo/status
 From Adam's laptop:
 
 ```bash
-curl http://<tailscale-ip>/api/repo/status
+curl http://<tailscale-ip>:8088/api/repo/status
 ```
 
 Public DNS mode:
@@ -141,7 +151,7 @@ curl -X POST http://localhost/api/search \
 From Adam's laptop:
 
 ```bash
-curl -X POST http://<tailscale-ip>/api/search \
+curl -X POST http://<tailscale-ip>:8088/api/search \
   -H "Content-Type: application/json" \
   -d '{"query":"Homestead","max_results":5}'
 ```
@@ -175,7 +185,7 @@ curl -X POST http://localhost/api/context-pack \
 From Adam's laptop:
 
 ```bash
-curl -X POST http://<tailscale-ip>/api/context-pack \
+curl -X POST http://<tailscale-ip>:8088/api/context-pack \
   -H "Content-Type: application/json" \
   -d '{"task":"Homestead second-brain OKF library","max_files":5}'
 ```
@@ -237,7 +247,7 @@ curl http://localhost/mcp/tools
 From Adam's laptop:
 
 ```bash
-curl http://<tailscale-ip>/mcp/tools
+curl http://<tailscale-ip>:8088/mcp/tools
 ```
 
 Public DNS mode:
@@ -269,7 +279,7 @@ curl -X POST http://localhost/mcp/call \
 From Adam's laptop:
 
 ```bash
-curl -X POST http://<tailscale-ip>/mcp/call \
+curl -X POST http://<tailscale-ip>:8088/mcp/call \
   -H "Content-Type: application/json" \
   -d '{"tool":"homestead.repo_status","arguments":{}}'
 ```
@@ -302,4 +312,59 @@ Expected:
 
 ```text
 404 Not Found
+```
+
+## 12. Private Exposure Check
+
+From Adam's laptop, public `:8088` should fail:
+
+```powershell
+curl.exe --max-time 10 http://<server-ip>:8088/health
+```
+
+Expected:
+
+```text
+connection timed out or failed
+```
+
+From Adam's laptop while signed into the same tailnet, Tailscale `:8088` should succeed:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/health
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/repo/status
+curl.exe --max-time 10 http://<tailscale-ip>:8088/mcp/tools
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/search -H "Content-Type: application/json" -d "{\"query\":\"Homestead\",\"max_results\":5}"
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/context-pack -H "Content-Type: application/json" -d "{\"task\":\"Homestead second-brain OKF library\",\"max_files\":5}"
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" -d "{\"tool\":\"homestead.repo_status\",\"arguments\":{}}"
+```
+
+If the Tailscale commands time out and `Test-NetConnection <tailscale-ip> -Port 8088` shows the Wi-Fi interface instead of a Tailscale interface, the laptop is not connected to the Tailnet yet. Fix the client before changing server exposure.
+
+## 13. Reboot Survival
+
+Run only when brief server downtime is acceptable:
+
+```bash
+ssh root@<server-ip>
+reboot
+```
+
+After the server returns:
+
+```bash
+ssh root@<server-ip>
+docker ps
+cd /opt/homestead/runtime
+HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env \
+docker compose --env-file /opt/homestead/secrets/runtime.env -f infra/docker-compose.yml ps
+curl http://<tailscale-ip>:8088/health
+```
+
+Expected:
+
+```text
+Docker is running
+all five Homestead services are up
+/health returns ok
 ```

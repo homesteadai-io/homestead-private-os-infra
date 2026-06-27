@@ -5,6 +5,7 @@ services:
     build:
       context: ..
       dockerfile: services/homestead-api/Dockerfile
+    restart: unless-stopped
     environment:
       HOMESTEAD_ENV: ${HOMESTEAD_ENV:-local}
       HOMESTEAD_REPO_PATH: ${HOMESTEAD_REPO_PATH:-/workspace/keep}
@@ -22,6 +23,7 @@ services:
     build:
       context: ..
       dockerfile: services/homestead-mcp/Dockerfile
+    restart: unless-stopped
     environment:
       HOMESTEAD_API_URL: ${HOMESTEAD_API_URL:-http://homestead-api:8000}
     depends_on:
@@ -32,6 +34,7 @@ services:
     build:
       context: ..
       dockerfile: services/repo-sync/Dockerfile
+    restart: unless-stopped
     environment:
       HOMESTEAD_REPO_PATH: ${HOMESTEAD_REPO_PATH:-/workspace/keep}
       REPO_SYNC_INTERVAL_SECONDS: 600
@@ -45,6 +48,7 @@ services:
     build:
       context: ..
       dockerfile: services/receipt-worker/Dockerfile
+    restart: unless-stopped
     environment:
       RECEIPTS_DIR: ${RECEIPTS_DIR:-/data/receipts}
       RECEIPT_QUEUE_DIR: /data/receipt-queue

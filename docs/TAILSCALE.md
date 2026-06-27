@@ -1,6 +1,6 @@
 # Tailscale
 
-v0 assumes private access first. The Homestead node can run on Hetzner while Adam reaches it through Tailscale, SSH tunnels, or tightly controlled DNS.
+v0 assumes private access first. The Homestead node runs on Hetzner; Adam's laptop and phone are clients. SSH tunnels are temporary fallback access, not a runtime dependency.
 
 ## Private Access Assumption
 
@@ -36,6 +36,8 @@ Set Caddy to bind to the server's Tailscale IP in `/opt/homestead/secrets/runtim
 TAILSCALE_IP="$(tailscale ip -4)"
 sed -i "s/^CADDY_HTTP_BIND=.*/CADDY_HTTP_BIND=$TAILSCALE_IP/" /opt/homestead/secrets/runtime.env
 sed -i "s/^CADDY_HTTPS_BIND=.*/CADDY_HTTPS_BIND=$TAILSCALE_IP/" /opt/homestead/secrets/runtime.env
+sed -i "s/^CADDY_HTTP_PORT=.*/CADDY_HTTP_PORT=8088/" /opt/homestead/secrets/runtime.env
+sed -i "s/^CADDY_HTTPS_PORT=.*/CADDY_HTTPS_PORT=8443/" /opt/homestead/secrets/runtime.env
 cd /opt/homestead/runtime
 ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
 ```
@@ -43,10 +45,12 @@ ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
 From Adam's laptop while connected to the same tailnet:
 
 ```bash
-curl http://<tailscale-ip>/health
-curl http://<tailscale-ip>/api/repo/status
-curl http://<tailscale-ip>/mcp/tools
+curl http://<tailscale-ip>:8088/health
+curl http://<tailscale-ip>:8088/api/repo/status
+curl http://<tailscale-ip>:8088/mcp/tools
 ```
+
+If these time out from the laptop, check the laptop Tailscale client first. Do not open public ports to compensate for a missing Tailnet client.
 
 ## Optional SSH Tunnel
 
@@ -85,8 +89,8 @@ Tailscale-only firewall example:
 
 ```bash
 ufw allow OpenSSH
-ufw allow in on tailscale0 to any port 80 proto tcp
-ufw allow in on tailscale0 to any port 443 proto tcp
+ufw allow in on tailscale0 to any port 8088 proto tcp
+ufw allow in on tailscale0 to any port 8443 proto tcp
 ufw enable
 ufw status
 ```
