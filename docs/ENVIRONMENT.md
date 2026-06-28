@@ -68,12 +68,20 @@ The inherited LiteLLM service currently binds on the Hetzner host at `127.0.0.1:
 | Variable | Purpose |
 |---|---|
 | `MODEL_GATEWAY` | `direct` or `litellm`; default `direct` |
-| `LITELLM_BASE_URL` | OpenAI-compatible LiteLLM base URL, for example `http://127.0.0.1:4000` when the API process can reach that loopback |
+| `LITELLM_BASE_URL` | OpenAI-compatible LiteLLM base URL. Use `http://litellm:4000` only with the private `infra/docker-compose.litellm.yml` network overlay. |
 | `LITELLM_API_KEY` | LiteLLM bearer token; real value belongs only in local/server env files |
 | `LITELLM_DEFAULT_MODEL` | default LiteLLM alias, for example `haiku` |
 | `LITELLM_SEND_TEMPERATURE` | set `true` only when the selected aliases support temperature overrides; default `false` |
 
 When `MODEL_GATEWAY=litellm`, Homestead does not silently fall back to OpenRouter. A LiteLLM failure returns a safe model-route error so operators know the selected gateway is broken.
+
+The optional private network overlay is:
+
+```text
+infra/docker-compose.litellm.yml
+```
+
+It attaches `homestead-api` to the existing external Docker network `arlo-net` so the API container can reach the inherited LiteLLM container at `http://litellm:4000` without publishing LiteLLM publicly or over Tailscale.
 
 ## Optional Langfuse Tracing
 

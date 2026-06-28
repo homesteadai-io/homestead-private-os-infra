@@ -358,6 +358,51 @@ OpenRouter remains the serving path
 LiteLLM remains closed publicly and over Tailscale
 ```
 
+Private container networking proof on Hetzner:
+
+```bash
+cd /opt/homestead/runtime
+docker network inspect arlo-net >/dev/null
+docker inspect litellm --format '{{json .NetworkSettings.Networks}}'
+```
+
+To deploy the optional private network overlay while keeping direct mode:
+
+```bash
+cd /opt/homestead/runtime
+docker compose \
+  --env-file /opt/homestead/secrets/runtime.env \
+  -f infra/docker-compose.yml \
+  -f infra/docker-compose.litellm.yml \
+  up -d --build homestead-api homestead-mcp caddy
+```
+
+Then prove the API container can reach LiteLLM privately:
+
+```bash
+HOMESTEAD_API="$(docker compose --env-file /opt/homestead/secrets/runtime.env -f infra/docker-compose.yml -f infra/docker-compose.litellm.yml ps -q homestead-api)"
+docker exec "$HOMESTEAD_API" python - <<'PY'
+import urllib.request
+urllib.request.urlopen("http://litellm:4000/health", timeout=10)
+print("litellm_private_health=ok")
+PY
+```
+
+Temporary live LiteLLM proof requires real `LITELLM_API_KEY` in `/opt/homestead/secrets/runtime.env`, never in git or chat:
+
+```text
+MODEL_GATEWAY=litellm
+LITELLM_BASE_URL=http://litellm:4000
+LITELLM_DEFAULT_MODEL=haiku
+LITELLM_SEND_TEMPERATURE=false
+```
+
+After the proof, restore:
+
+```text
+MODEL_GATEWAY=direct
+```
+
 Unit tests should cover optional LiteLLM mode with mocked upstream behavior:
 
 ```text

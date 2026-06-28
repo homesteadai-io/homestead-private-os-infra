@@ -91,11 +91,19 @@ Keep production on:
 MODEL_GATEWAY=direct
 ```
 
-until a deliberate private server-side path is chosen. The next safe options are:
+until a deliberate private server-side path is chosen.
 
-- attach Homestead API to a private shared Docker network with LiteLLM, without publishing LiteLLM,
-- add a loopback-only host proxy that is reachable from the Homestead container through a private bridge,
-- or keep LiteLLM proof-only and continue direct OpenRouter.
+Task 5C adds the repeatable private bridge as an optional Docker Compose overlay:
+
+```text
+infra/docker-compose.litellm.yml
+```
+
+The overlay attaches only `homestead-api` to the existing external `arlo-net` network. With that overlay, LiteLLM is reachable privately from the API container at:
+
+```text
+http://litellm:4000
+```
 
 Do not expose LiteLLM publicly or over Tailscale to solve this.
 
@@ -116,4 +124,11 @@ Local API tests cover:
 
 Keep Homestead live on direct OpenRouter for now.
 
-The code now has the optional gateway hook, but production enablement should wait for Task 5C: private container-to-LiteLLM connectivity proof. That task should decide the network path without changing public exposure, then run one live `MODEL_GATEWAY=litellm` acceptance test against a low-cost alias.
+The code now has the optional gateway hook and the private network overlay, but production should still be restored to `MODEL_GATEWAY=direct` after proof. Merge only after live acceptance proves:
+
+- `MODEL_GATEWAY=direct` works after the overlay deploy,
+- temporary `MODEL_GATEWAY=litellm` works through `http://litellm:4000`,
+- Langfuse and receipts record `gateway=litellm`,
+- public `:4000`, `:3000`, `:9090`, and `:8088` remain closed,
+- LiteLLM remains closed over Tailscale,
+- production is restored to `MODEL_GATEWAY=direct`.

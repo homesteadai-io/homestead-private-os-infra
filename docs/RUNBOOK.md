@@ -185,13 +185,23 @@ Optional LiteLLM gateway support exists, but direct OpenRouter is the production
 
 ```bash
 MODEL_GATEWAY=direct
-LITELLM_BASE_URL=http://127.0.0.1:4000
+LITELLM_BASE_URL=http://litellm:4000
 LITELLM_API_KEY=
 LITELLM_DEFAULT_MODEL=haiku
 LITELLM_SEND_TEMPERATURE=false
 ```
 
-Do not set `MODEL_GATEWAY=litellm` on the live Docker deployment until Homestead has a deliberate private container-to-LiteLLM path. The inherited LiteLLM service binds host loopback at `127.0.0.1:4000`; inside the Homestead API container, `127.0.0.1` is the API container, not the host.
+Do not set `MODEL_GATEWAY=litellm` unless the deployment includes the optional private network overlay:
+
+```bash
+docker compose \
+  --env-file /opt/homestead/secrets/runtime.env \
+  -f infra/docker-compose.yml \
+  -f infra/docker-compose.litellm.yml \
+  up -d --build homestead-api homestead-mcp caddy
+```
+
+The overlay attaches `homestead-api` to the existing external Docker network `arlo-net`, where the inherited LiteLLM container is reachable as `http://litellm:4000`. Do not expose LiteLLM publicly or over Tailscale to make this work.
 
 Verify LiteLLM variable names without printing values:
 

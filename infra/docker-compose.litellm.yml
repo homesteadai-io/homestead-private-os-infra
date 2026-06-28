@@ -1,0 +1,10 @@
+services:
+  homestead-api:
+    networks:
+      - default
+      - arlo-net
+
+networks:
+  arlo-net:
+    external: true
+    name: arlo-net
