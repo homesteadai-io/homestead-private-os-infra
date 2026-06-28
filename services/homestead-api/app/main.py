@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import re
 import subprocess
@@ -177,6 +178,13 @@ class SystemProbeRequest(BaseModel):
     max_tokens: int = Field(default=50, ge=1, le=200)
 
 
+class OpsPolicyCheckRequest(BaseModel):
+    operation_type: str = Field(..., min_length=1)
+    operation: str = Field(..., min_length=1)
+    requesting_agent: str = "unknown"
+    surface: str | None = None
+
+
 def clean_run_id(value: str | None) -> str:
     raw = value or f"run-{uuid4().hex[:12]}"
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-._")
@@ -233,6 +241,9 @@ def receipt_summary(json_path: Path) -> dict[str, Any]:
         "gateway": metadata.get("gateway"),
         "action": metadata.get("action"),
         "probe": metadata.get("probe"),
+        "operation_type": metadata.get("operation_type"),
+        "operation": metadata.get("operation"),
+        "policy_decision": metadata.get("policy_decision"),
         "requested_model": metadata.get("requested_model"),
         "model_used": metadata.get("model_used") or data.get("model_used"),
         "latency_ms": metadata.get("latency_ms"),
@@ -330,6 +341,9 @@ def ops_receipt_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "review_required": summary.get("review_required"),
         "action": summary.get("action"),
         "probe": summary.get("probe"),
+        "operation_type": summary.get("operation_type"),
+        "operation": summary.get("operation"),
+        "policy_decision": summary.get("policy_decision"),
         "ok": summary.get("ok"),
         "error_summary": summary.get("error_summary"),
         "receipt_path": summary.get("markdown_path"),
@@ -401,6 +415,291 @@ def exposure_assumptions() -> dict[str, Any]:
     }
 
 
+POLICY_VERSION = "v0-ops-approval-policy-gate"
+KNOWN_POLICY_SURFACES = {"codex", "manual_cli", "mcp", "unknown"}
+POLICY_ALLOWED_ACTIONS = {"refresh_node_status", "sync_keep_health", "write_status_receipt"}
+POLICY_ALLOWED_PROBES = {
+    "node_status",
+    "receipt_write",
+    "keep_health_sync",
+    "model_route",
+    "litellm_private_health",
+    "exposure_config",
+    "all",
+}
+POLICY_UNKNOWN_SURFACE_PROBES = {"node_status"}
+POLICY_SENSITIVE_OPERATIONS = {
+    "change_runtime_config",
+    "set_model_gateway",
+    "enable_litellm_gateway",
+    "rotate_secret",
+    "sync_secret",
+}
+POLICY_DISABLED_OPERATIONS = {
+    "turn_on_runner",
+    "enable_runner",
+    "start_runner",
+    "schedule_job",
+    "enable_scheduler",
+    "enable_alerts",
+    "enable_dashboard",
+    "enable_local_mode",
+}
+
+
+def normalize_policy_token(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9_./-]+", "_", raw).strip("_")
+    return normalized or "unknown"
+
+
+def normalize_policy_surface(value: str | None) -> str:
+    token = normalize_policy_token(value)
+    if "codex" in token:
+        return "codex"
+    if "mcp" in token:
+        return "mcp"
+    if token in {"cli", "manual", "manual_cli", "powershell", "curl"}:
+        return "manual_cli"
+    return token if token in KNOWN_POLICY_SURFACES else "unknown"
+
+
+def ops_policy_surface_token() -> str | None:
+    token = os.getenv("OPS_POLICY_SURFACE_TOKEN", "").strip()
+    return token or None
+
+
+def trusted_policy_surface_claim(http_request: Request | None) -> bool:
+    expected = ops_policy_surface_token()
+    if not expected or http_request is None:
+        return False
+    supplied = http_request.headers.get("x-homestead-policy-token", "").strip()
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
+def derive_policy_surface(
+    *,
+    requested_surface: str | None = None,
+    requesting_agent: str | None = None,
+    http_request: Request | None = None,
+) -> str:
+    trusted_claim = trusted_policy_surface_claim(http_request)
+    if requested_surface:
+        surface = normalize_policy_surface(requested_surface)
+        return surface if surface == "unknown" or trusted_claim else "unknown"
+    if http_request:
+        header_surface = http_request.headers.get("x-homestead-surface")
+        if header_surface:
+            surface = normalize_policy_surface(header_surface)
+            return surface if surface == "unknown" or trusted_claim else "unknown"
+    if requesting_agent:
+        surface = normalize_policy_surface(requesting_agent)
+        return surface if surface == "unknown" or trusted_claim else "unknown"
+    if http_request:
+        surface = normalize_policy_surface(http_request.headers.get("user-agent"))
+        return surface if surface == "unknown" or trusted_claim else "unknown"
+    return "unknown"
+
+
+def ops_policy_payload() -> dict[str, Any]:
+    return {
+        "generated_at": utc_now(),
+        "policy_version": POLICY_VERSION,
+        "mode": "manual_only",
+        "default_decision": "deny",
+        "manual_only": True,
+        "trusted_surface_token_required": True,
+        "trusted_surface_token_configured": ops_policy_surface_token() is not None,
+        "scheduler_enabled": False,
+        "autonomous_execution": False,
+        "rules": [
+            {
+                "surface": "codex",
+                "actions": sorted(POLICY_ALLOWED_ACTIONS),
+                "probes": sorted(POLICY_ALLOWED_PROBES),
+                "decision": "allow_with_receipt",
+            },
+            {
+                "surface": "mcp",
+                "actions": sorted(POLICY_ALLOWED_ACTIONS),
+                "probes": sorted(POLICY_ALLOWED_PROBES),
+                "decision": "allow_with_receipt",
+            },
+            {
+                "surface": "manual_cli",
+                "actions": sorted(POLICY_ALLOWED_ACTIONS),
+                "probes": sorted(POLICY_ALLOWED_PROBES),
+                "decision": "allow_with_receipt",
+            },
+            {
+                "surface": "unknown",
+                "actions": [],
+                "probes": sorted(POLICY_UNKNOWN_SURFACE_PROBES),
+                "decision": "allow_with_receipt",
+            },
+        ],
+        "sensitive_operations": sorted(POLICY_SENSITIVE_OPERATIONS),
+        "disabled_operations": sorted(POLICY_DISABLED_OPERATIONS),
+        "receipt_task": "ops_policy_decision",
+    }
+
+
+def policy_decision_response(
+    *,
+    surface: str,
+    operation_type: str,
+    operation: str,
+    decision: str,
+    reason: str,
+) -> dict[str, Any]:
+    allowed = decision in {"allow", "allow_with_receipt"}
+    return {
+        "ok": allowed,
+        "allowed": allowed,
+        "decision": decision,
+        "surface": surface,
+        "operation_type": operation_type,
+        "operation": operation,
+        "reason": reason,
+        "receipt_required": decision in {"allow_with_receipt", "deny", "needs_confirmation"},
+        "requires_confirmation": decision == "needs_confirmation",
+        "manual_only": True,
+        "policy_version": POLICY_VERSION,
+    }
+
+
+def check_ops_policy_payload(
+    request: OpsPolicyCheckRequest,
+    http_request: Request | None = None,
+) -> dict[str, Any]:
+    operation_type = normalize_policy_token(request.operation_type)
+    operation = normalize_policy_token(request.operation)
+    surface = derive_policy_surface(
+        requested_surface=request.surface,
+        requesting_agent=request.requesting_agent,
+        http_request=http_request,
+    )
+
+    if operation_type not in {"action", "probe"}:
+        raise HTTPException(status_code=400, detail="operation_type must be action or probe")
+    if operation in POLICY_DISABLED_OPERATIONS:
+        return policy_decision_response(
+            surface=surface,
+            operation_type=operation_type,
+            operation=operation,
+            decision="deny",
+            reason=f"{operation} is intentionally disabled in manual_only mode",
+        )
+    if operation in POLICY_SENSITIVE_OPERATIONS:
+        return policy_decision_response(
+            surface=surface,
+            operation_type=operation_type,
+            operation=operation,
+            decision="needs_confirmation",
+            reason=f"{operation} changes sensitive runtime state and requires Adam confirmation",
+        )
+
+    allowed_operations = POLICY_ALLOWED_ACTIONS if operation_type == "action" else POLICY_ALLOWED_PROBES
+    if surface == "unknown":
+        allowed_operations = set() if operation_type == "action" else POLICY_UNKNOWN_SURFACE_PROBES
+
+    if operation in allowed_operations:
+        return policy_decision_response(
+            surface=surface,
+            operation_type=operation_type,
+            operation=operation,
+            decision="allow_with_receipt",
+            reason=f"{surface} may run explicit {operation_type} {operation} with receipt",
+        )
+
+    return policy_decision_response(
+        surface=surface,
+        operation_type=operation_type,
+        operation=operation,
+        decision="deny",
+        reason=f"no policy rule allows {surface} to run {operation_type} {operation}",
+    )
+
+
+def policy_allows(decision: dict[str, Any]) -> bool:
+    return decision.get("allowed") is True
+
+
+def policy_receipt_metadata(decision: dict[str, Any]) -> dict[str, Any]:
+    operation_type = str(decision.get("operation_type") or "unknown")
+    operation = str(decision.get("operation") or "unknown")
+    metadata = {
+        "surface": decision.get("surface"),
+        "operation_type": operation_type,
+        "operation": operation,
+        "policy_decision": decision.get("decision"),
+        "decision": decision.get("decision"),
+        "allowed": decision.get("allowed"),
+        "reason": decision.get("reason"),
+        "receipt_required": decision.get("receipt_required"),
+        "requires_confirmation": decision.get("requires_confirmation"),
+        "manual_only": decision.get("manual_only"),
+        "policy_version": decision.get("policy_version"),
+    }
+    if operation_type == "action":
+        metadata["action"] = operation
+    if operation_type == "probe":
+        metadata["probe"] = operation
+    return metadata
+
+
+def ops_policy_decision_receipt_payload(
+    *,
+    decision: dict[str, Any],
+    requesting_agent: str,
+    review_required: bool,
+) -> dict[str, Any]:
+    operation_type = str(decision.get("operation_type") or "unknown")
+    operation = str(decision.get("operation") or "unknown")
+    return {
+        "run_id": f"ops-policy-{operation_type}-{clean_run_id(operation.replace('_', '-'))}-{uuid4().hex[:8]}",
+        "timestamp": utc_now(),
+        "requesting_agent": requesting_agent or "unknown",
+        "task": "ops_policy_decision",
+        "files_read": [],
+        "model_used": "not_applicable_v0",
+        "actions_taken": [
+            f"evaluated ops policy for {operation_type} {operation}",
+            "recorded metadata-only policy decision",
+        ],
+        "files_changed": [],
+        "review_required": review_required,
+        "verdict": "ok" if decision.get("allowed") else "denied",
+        "metadata": policy_receipt_metadata(decision),
+    }
+
+
+def write_ops_policy_decision_receipt(
+    *,
+    decision: dict[str, Any],
+    requesting_agent: str,
+    review_required: bool,
+) -> dict[str, str]:
+    return write_ops_receipt(
+        ops_policy_decision_receipt_payload(
+            decision=decision,
+            requesting_agent=requesting_agent,
+            review_required=review_required,
+        )
+    )
+
+
+def safe_policy_denial_receipt(decision: dict[str, Any], requesting_agent: str) -> dict[str, str]:
+    try:
+        return write_ops_policy_decision_receipt(
+            decision=decision,
+            requesting_agent=requesting_agent,
+            review_required=True,
+        )
+    except Exception:
+        return {"receipt_error": "policy denial receipt write failed"}
+
+
 def node_status_payload() -> dict[str, Any]:
     receipts = receipt_status_summary()
     return {
@@ -436,6 +735,14 @@ def cloud_capabilities() -> dict[str, Any]:
         },
         "receipt_index": {"enabled": True, "read_only": True},
         "keep_health_receipts": {"enabled": True, "write_mode": "explicit_sync_only"},
+        "ops_policy_gate": {
+            "enabled": True,
+            "status": "active",
+            "mode": "manual_only",
+            "default_decision": "deny",
+            "trusted_surface_token_required": True,
+            "trusted_surface_token_configured": ops_policy_surface_token() is not None,
+        },
         "local_mode": {
             "enabled": False,
             "status": "available_later",
@@ -552,6 +859,20 @@ def capability_registry_payload() -> dict[str, Any]:
             "agent_safe": True,
             "write_access": "none",
         },
+        "ops_policy_gate": {
+            "enabled": True,
+            "status": "active",
+            "surface": ["/ops/policy", "/ops/policy/check", "homestead.ops_policy", "homestead.check_ops_policy"],
+            "agent_safe": True,
+            "mode": "manual_only",
+            "default_decision": "deny",
+            "trusted_surface_token_required": True,
+            "trusted_surface_token_configured": ops_policy_surface_token() is not None,
+            "write_access": "policy_decision_receipts",
+            "scheduler_enabled": False,
+            "autonomous_execution": False,
+            "policy_version": POLICY_VERSION,
+        },
         "manual_ops": {
             "enabled": True,
             "status": "manual_only",
@@ -567,6 +888,7 @@ def capability_registry_payload() -> dict[str, Any]:
             ],
             "agent_safe": True,
             "write_access": "explicit_receipt_backed_actions",
+            "policy_gate": "required",
             "scheduler_enabled": False,
             "autonomous_execution": False,
         },
@@ -576,6 +898,7 @@ def capability_registry_payload() -> dict[str, Any]:
             "surface": ["/keep/health/sync", "homestead.sync_keep_health"],
             "agent_safe": True,
             "write_access": "append_operational_memory",
+            "policy_gate": "required",
             "policy": keep_health_policy(),
         },
         "local_mode": {
@@ -633,6 +956,8 @@ def os_context_payload() -> dict[str, Any]:
             "homestead.os_status",
             "homestead.os_context",
             "homestead.os_capabilities",
+            "homestead.ops_policy",
+            "homestead.check_ops_policy",
             "homestead.list_manual_ops",
             "homestead.run_manual_action",
             "homestead.run_system_probe",
@@ -731,6 +1056,7 @@ def manual_ops_catalog() -> dict[str, Any]:
     return {
         "generated_at": utc_now(),
         "mode": "manual_only",
+        "policy_gate_enabled": True,
         "scheduler_enabled": False,
         "runner_enabled": False,
         "actions": {
@@ -757,6 +1083,13 @@ def manual_ops_catalog() -> dict[str, Any]:
             "all": {"description": "Run every probe once, sequentially."},
         },
         "policy": {
+            "gate_enabled": True,
+            "endpoint": "/ops/policy",
+            "check_endpoint": "/ops/policy/check",
+            "default_decision": "deny",
+            "policy_version": POLICY_VERSION,
+            "trusted_surface_token_required": True,
+            "trusted_surface_token_configured": ops_policy_surface_token() is not None,
             "scheduled_execution": "disabled",
             "autonomous_execution": "disabled",
             "public_exposure_changes": "forbidden",
@@ -809,6 +1142,7 @@ def ops_receipt_payload(
     note: str | None = None,
     files_changed: list[str] | None = None,
     error_summary: str | None = None,
+    policy_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     safe_name = clean_run_id(name.replace("_", "-"))
     run_id = f"{task.replace('_', '-')}-{safe_name}-{uuid4().hex[:8]}"
@@ -825,6 +1159,9 @@ def ops_receipt_payload(
         clean_metadata["note"] = note[:240]
     if error_summary:
         clean_metadata["error_summary"] = error_summary[:240]
+    if policy_decision:
+        clean_metadata["policy"] = policy_receipt_metadata(policy_decision)
+        clean_metadata["policy_decision"] = policy_decision.get("decision")
     return {
         "run_id": run_id,
         "timestamp": utc_now(),
@@ -855,7 +1192,7 @@ def recent_ops_receipts(limit: int = 20) -> dict[str, Any]:
     summaries = [
         summary
         for summary in sorted_receipt_summaries(all_receipt_json_files())
-        if summary.get("task") in {"manual_ops_action", "system_probe"}
+        if summary.get("task") in {"manual_ops_action", "system_probe", "ops_policy_decision"}
     ]
     limited = summaries[:limit]
     return {
@@ -867,7 +1204,10 @@ def recent_ops_receipts(limit: int = 20) -> dict[str, Any]:
     }
 
 
-def run_manual_action_payload(request: ManualActionRequest) -> dict[str, Any]:
+def run_manual_action_payload(
+    request: ManualActionRequest,
+    policy_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     action = request.action.strip().lower()
     catalog = manual_ops_catalog()["actions"]
     if action not in catalog:
@@ -906,9 +1246,17 @@ def run_manual_action_payload(request: ManualActionRequest) -> dict[str, Any]:
                 metadata=metadata,
                 note=request.note,
                 files_changed=files_changed,
+                policy_decision=policy_decision,
             )
         )
-        return {"ok": True, "action": action, "mode": "manual_only", "result": result, **receipt}
+        return {
+            "ok": True,
+            "action": action,
+            "mode": "manual_only",
+            "policy": policy_decision,
+            "result": result,
+            **receipt,
+        }
     except Exception as exc:
         error_summary = safe_exception_summary(exc)
         try:
@@ -922,6 +1270,7 @@ def run_manual_action_payload(request: ManualActionRequest) -> dict[str, Any]:
                     metadata={},
                     note=request.note,
                     error_summary=error_summary,
+                    policy_decision=policy_decision,
                 )
             )
         except Exception:
@@ -1047,7 +1396,10 @@ async def run_one_probe(probe: str, request: SystemProbeRequest) -> dict[str, An
     raise HTTPException(status_code=400, detail=f"unknown system probe: {probe}")
 
 
-async def run_system_probe_payload(request: SystemProbeRequest) -> dict[str, Any]:
+async def run_system_probe_payload(
+    request: SystemProbeRequest,
+    policy_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     probe = request.probe.strip().lower()
     known = set(manual_ops_catalog()["probes"].keys())
     if probe not in known:
@@ -1074,12 +1426,14 @@ async def run_system_probe_payload(request: SystemProbeRequest) -> dict[str, Any
             metadata={"probe_results": results},
             note=request.note,
             error_summary=error_summary,
+            policy_decision=policy_decision,
         )
     )
     return {
         "ok": ok,
         "probe": probe,
         "mode": "manual_only",
+        "policy": policy_decision,
         "results": results,
         **receipt,
     }
@@ -1116,7 +1470,13 @@ def os_capabilities() -> dict[str, Any]:
 
 
 @app.post("/keep/health/sync")
-def keep_health_sync(request: KeepHealthSyncRequest) -> dict[str, Any]:
+def keep_health_sync(request: KeepHealthSyncRequest, http_request: Request) -> dict[str, Any]:
+    enforce_ops_policy(
+        operation_type="action",
+        operation="sync_keep_health",
+        requesting_agent=request.requesting_agent,
+        http_request=http_request,
+    )
     return sync_keep_health_summary(request.requesting_agent, request.note)
 
 
@@ -1125,14 +1485,76 @@ def ops_actions() -> dict[str, Any]:
     return manual_ops_catalog()
 
 
+@app.get("/ops/policy")
+def ops_policy() -> dict[str, Any]:
+    return ops_policy_payload()
+
+
+@app.post("/ops/policy/check")
+def ops_policy_check(request: OpsPolicyCheckRequest, http_request: Request) -> dict[str, Any]:
+    return check_ops_policy_payload(request, http_request)
+
+
+def enforce_ops_policy(
+    *,
+    operation_type: str,
+    operation: str,
+    requesting_agent: str,
+    http_request: Request,
+) -> dict[str, Any]:
+    try:
+        decision = check_ops_policy_payload(
+            OpsPolicyCheckRequest(
+                operation_type=operation_type,
+                operation=operation,
+                requesting_agent=requesting_agent,
+            ),
+            http_request,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        decision = policy_decision_response(
+            surface=derive_policy_surface(requesting_agent=requesting_agent, http_request=http_request),
+            operation_type=normalize_policy_token(operation_type),
+            operation=normalize_policy_token(operation),
+            decision="deny",
+            reason="policy evaluation failed closed",
+        )
+    if policy_allows(decision):
+        return decision
+
+    receipt = safe_policy_denial_receipt(decision, requesting_agent)
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "ops policy denied operation",
+            **decision,
+            **receipt,
+        },
+    )
+
+
 @app.post("/ops/actions/run")
-def ops_action_run(request: ManualActionRequest) -> dict[str, Any]:
-    return run_manual_action_payload(request)
+def ops_action_run(request: ManualActionRequest, http_request: Request) -> dict[str, Any]:
+    decision = enforce_ops_policy(
+        operation_type="action",
+        operation=request.action,
+        requesting_agent=request.requesting_agent,
+        http_request=http_request,
+    )
+    return run_manual_action_payload(request, decision)
 
 
 @app.post("/ops/probes/run")
-async def ops_probe_run(request: SystemProbeRequest) -> dict[str, Any]:
-    return await run_system_probe_payload(request)
+async def ops_probe_run(request: SystemProbeRequest, http_request: Request) -> dict[str, Any]:
+    decision = enforce_ops_policy(
+        operation_type="probe",
+        operation=request.probe,
+        requesting_agent=request.requesting_agent,
+        http_request=http_request,
+    )
+    return await run_system_probe_payload(request, decision)
 
 
 @app.get("/ops/recent")
