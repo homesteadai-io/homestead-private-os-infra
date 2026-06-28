@@ -143,7 +143,7 @@ concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance
 PASS reply:
 
 ```text
-Creative Coatings is a separate powder-schedule business workflow. Its app manages a weekly powder board, schedule inbox, core/open-order candidate pool, traveler/photo intake, Add to Schedule, Hot List, and shop handoff. It is not Homestead infrastructure. It cites concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6.
+Creative Coatings is a separate powder-schedule business workflow. Its app manages a weekly powder board, schedule inbox, core/open-order candidate pool, traveler/photo intake, Add to Schedule, Hot List, and shop handoff. It is not Homestead infrastructure. It cites concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6.
 ```
 
 FAIL reply:
@@ -155,7 +155,7 @@ It describes Creative Coatings as an OS runtime, runner, dashboard for Homestead
 Expected concept ID:
 
 ```text
-concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6
+concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6
 ```
 
 ### 5. What is the difference between Core Dump Inbox and Schedule Intake Inbox?
@@ -163,7 +163,7 @@ concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coating
 PASS reply:
 
 ```text
-Core Dump Inbox is for clean plant/open-order data that refreshes the In Process candidate pool. Schedule Intake Inbox is for messy human scheduling inputs such as Monday sheets, traveler photos, hot-list emails, customer notes, screenshots, PDFs, Docs, sheets, and partial files. Core refresh must not wipe schedule-inbox, weekly-board, manual, traveler, or Sent to Shop rows. It cites concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6.
+Core Dump Inbox is for clean plant/open-order data that refreshes the In Process candidate pool. Schedule Intake Inbox is for messy human scheduling inputs such as Monday sheets, traveler photos, hot-list emails, customer notes, screenshots, PDFs, Docs, sheets, and partial files. Core refresh must not wipe schedule-inbox, weekly-board, manual, traveler, or Sent to Shop rows. It cites concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6.
 ```
 
 FAIL reply:
@@ -175,7 +175,7 @@ It merges the two inboxes, says core dumps replace all schedule state, or import
 Expected concept ID:
 
 ```text
-concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6
+concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6
 ```
 
 ### 6. Is Creative Coatings part of the Homestead runtime, or is it a separate project context?
@@ -183,7 +183,7 @@ concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coating
 PASS reply:
 
 ```text
-Creative Coatings is a separate project context indexed by Homestead. Homestead is the private OS/control spine; Creative Coatings is a powder scheduler/workflow project. The agent should keep those contexts separate and cite both a Homestead concept and a Creative Coatings concept, such as concept-deed-571b2b47 and concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6.
+Creative Coatings is a separate project context indexed by Homestead. Homestead is the private OS/control spine; Creative Coatings is a powder scheduler/workflow project. The agent should keep those contexts separate and cite both a Homestead concept and a Creative Coatings concept, such as concept-deed-571b2b47 and concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6.
 ```
 
 FAIL reply:
@@ -196,7 +196,7 @@ Expected concept IDs:
 
 ```text
 concept-deed-571b2b47
-concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6
+concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6
 ```
 
 ## PASS Shape
