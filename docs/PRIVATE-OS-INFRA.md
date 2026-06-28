@@ -40,6 +40,23 @@ client / agent
        -> homestead-api
 ```
 
+## Hetzner Layout
+
+```text
+/opt/homestead/
+  runtime/    # this repo
+  the-keep/   # Adam's second-brain OKF library/context graph
+  data/       # receipts, logs, runtime state
+  backups/    # tarball backups
+  secrets/    # local-only env files
+```
+
+Runtime env lives at:
+
+```text
+/opt/homestead/secrets/runtime.env
+```
+
 ## API Endpoints
 
 | Method | Path | Purpose |
