@@ -22,6 +22,7 @@ Never commit real env files.
 | `HOMESTEAD_DATA_PATH` | host path mounted to `/data` |
 | `HOMESTEAD_ENV_FILE` | env file path used by Docker Compose service `env_file` |
 | `HOMESTEAD_API_URL` | internal API URL used by MCP facade |
+| `HOMESTEAD_SELF_URL` | internal self URL used by explicit model-route system probes |
 | `CADDY_HTTP_BIND` | host address for Caddy port 80 |
 | `CADDY_HTTPS_BIND` | host address for Caddy port 443 |
 | `CADDY_HTTP_PORT` | host port mapped to Caddy container port 80 |
@@ -39,6 +40,7 @@ HOMESTEAD_DATA_PATH=/opt/homestead/data
 HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env
 HOMESTEAD_API_URL=http://homestead-api:8000
 HOMESTEAD_MCP_URL=http://homestead-mcp:8010
+HOMESTEAD_SELF_URL=http://127.0.0.1:8000
 CADDY_HTTP_BIND=100.112.20.36
 CADDY_HTTPS_BIND=100.112.20.36
 CADDY_HTTP_PORT=8088
@@ -185,6 +187,61 @@ It may remain dirty/untracked until a separate Keep sync policy is chosen.
 Agents may read it for current node context.
 Agents must not auto-commit it, treat it as infra source, or write prompt/content/secrets into it.
 ```
+
+## Manual Ops And System Probes
+
+Homestead exposes manual-only, receipt-backed operations:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /ops/actions` | list allowed manual actions and probes |
+| `POST /ops/actions/run` | run one explicit manual action |
+| `POST /ops/probes/run` | run one explicit system probe |
+| `GET /ops/recent?limit=20` | list recent manual ops/probe receipts |
+
+MCP tools:
+
+```text
+homestead.list_manual_ops
+homestead.run_manual_action
+homestead.run_system_probe
+homestead.list_recent_ops
+```
+
+Allowed manual actions:
+
+```text
+refresh_node_status
+sync_keep_health
+write_status_receipt
+```
+
+Allowed system probes:
+
+```text
+node_status
+receipt_write
+keep_health_sync
+model_route
+litellm_private_health
+exposure_config
+all
+```
+
+Manual ops policy:
+
+```text
+scheduled_execution: disabled
+autonomous_execution: disabled
+runner: disabled
+alerts: disabled
+dashboard: disabled
+local_mode: disabled
+public_exposure_changes: forbidden
+gateway_default_changes: forbidden
+```
+
+`HOMESTEAD_SELF_URL` defaults to `http://127.0.0.1:8000` inside the API container so the explicit `model_route` probe can call the local API process. It should not be a public URL.
 
 ## Future Placeholders
 

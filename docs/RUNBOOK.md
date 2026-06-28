@@ -143,6 +143,7 @@ HOMESTEAD_DATA_PATH=/opt/homestead/data
 HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env
 HOMESTEAD_API_URL=http://homestead-api:8000
 HOMESTEAD_MCP_URL=http://homestead-mcp:8010
+HOMESTEAD_SELF_URL=http://127.0.0.1:8000
 CADDY_HTTP_BIND=127.0.0.1
 CADDY_HTTPS_BIND=127.0.0.1
 CADDY_HTTP_PORT=80
@@ -381,6 +382,10 @@ homestead.node_status
 homestead.os_status
 homestead.os_context
 homestead.os_capabilities
+homestead.list_manual_ops
+homestead.run_manual_action
+homestead.run_system_probe
+homestead.list_recent_ops
 homestead.sync_keep_health
 ```
 
@@ -485,6 +490,81 @@ Do not auto-commit it.
 Do not treat it as infra source.
 Do not write prompt/content/secrets/raw env into it.
 ```
+
+## Manual Ops And System Probes
+
+Manual ops are explicit, receipt-backed commands. They do not create a scheduler, runner, dashboard, alert system, local mode, or autonomous workflow.
+
+List available operations:
+
+```powershell
+curl http://<tailscale-ip>:8088/api/ops/actions
+```
+
+Run a manual action:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"action":"refresh_node_status","requesting_agent":"runbook-manual-op","note":"manual status receipt"}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/ops/actions/run -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Run system probes:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"probe":"node_status","requesting_agent":"runbook-probe"}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/ops/probes/run -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"probe":"model_route","requesting_agent":"runbook-model-probe","max_tokens":50}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/api/ops/probes/run -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+List recent manual ops/probe receipts:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/ops/recent?limit=20
+```
+
+MCP equivalents:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.list_manual_ops","arguments":{}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.run_system_probe","arguments":{"probe":"exposure_config","requesting_agent":"runbook-mcp-probe"}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Allowed actions:
+
+```text
+refresh_node_status
+sync_keep_health
+write_status_receipt
+```
+
+Allowed probes:
+
+```text
+node_status
+receipt_write
+keep_health_sync
+model_route
+litellm_private_health
+exposure_config
+all
+```
+
+Every manual action/probe writes a receipt when the receipt writer is available. Failed probes are marked `review_required=true` and should appear in `/api/receipts/review`.
 
 ## Always-On Runtime Check
 

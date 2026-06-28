@@ -37,6 +37,7 @@ def clear_langfuse_env(monkeypatch):
         "CADDY_HTTPS_BIND",
         "CADDY_HTTP_PORT",
         "CADDY_HTTPS_PORT",
+        "HOMESTEAD_SELF_URL",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -472,6 +473,197 @@ def test_os_capabilities_registry_is_agent_safe_without_secrets(monkeypatch, tmp
     assert "super-secret" not in response.text
     assert "pk-secret" not in response.text
     assert "sk-secret" not in response.text
+
+
+def test_manual_ops_catalog_and_capability_registry(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+
+    catalog = client.get("/ops/actions")
+    caps = client.get("/os/capabilities")
+
+    assert catalog.status_code == 200
+    assert catalog.json()["mode"] == "manual_only"
+    assert catalog.json()["scheduler_enabled"] is False
+    assert catalog.json()["runner_enabled"] is False
+    assert "sync_keep_health" in catalog.json()["actions"]
+    assert "model_route" in catalog.json()["probes"]
+    assert caps.status_code == 200
+    manual_ops = caps.json()["entries"]["manual_ops"]
+    assert manual_ops["status"] == "manual_only"
+    assert manual_ops["scheduler_enabled"] is False
+    assert manual_ops["autonomous_execution"] is False
+
+
+def test_manual_action_refresh_node_status_writes_receipt(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+
+    response = client.post(
+        "/ops/actions/run",
+        json={
+            "action": "refresh_node_status",
+            "requesting_agent": "pytest-manual-ops",
+            "note": "manual action note",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["action"] == "refresh_node_status"
+    assert body["mode"] == "manual_only"
+    assert body["receipt_id"].startswith("manual-ops-action-refresh-node-status-")
+    json_path = Path(body["json_path"])
+    receipt = json.loads(json_path.read_text(encoding="utf-8"))
+    assert receipt["task"] == "manual_ops_action"
+    assert receipt["requesting_agent"] == "pytest-manual-ops"
+    assert receipt["review_required"] is False
+    assert receipt["metadata"]["action"] == "refresh_node_status"
+    assert receipt["metadata"]["manual_only"] is True
+    assert receipt["metadata"]["note"] == "manual action note"
+    assert "super-secret-openrouter" not in response.text
+    assert "super-secret-openrouter" not in json.dumps(receipt)
+
+
+def test_manual_action_sync_keep_health_records_files_changed(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("KEEP_HEALTH_DIR", "System Receipts/Homestead Health")
+
+    response = client.post(
+        "/ops/actions/run",
+        json={"action": "sync_keep_health", "requesting_agent": "pytest-manual-sync"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["result"]["health_dir"] == "/System Receipts/Homestead Health"
+    assert "/System Receipts/Homestead Health/index.md" in body["result"]["files_changed"]
+    receipt = json.loads(Path(body["json_path"]).read_text(encoding="utf-8"))
+    assert receipt["metadata"]["action"] == "sync_keep_health"
+    assert receipt["files_changed"]
+
+
+def test_manual_action_unknown_is_safe(monkeypatch, tmp_path):
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+
+    response = client.post("/ops/actions/run", json={"action": "turn_on_runner"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "unknown manual action: turn_on_runner"
+
+
+def test_system_probe_exposure_and_recent_ops(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+
+    probe = client.post(
+        "/ops/probes/run",
+        json={"probe": "exposure_config", "requesting_agent": "pytest-probe"},
+    )
+    recent = client.get("/ops/recent?limit=5")
+
+    assert probe.status_code == 200
+    body = probe.json()
+    assert body["ok"] is True
+    assert body["probe"] == "exposure_config"
+    assert body["receipt_id"].startswith("system-probe-exposure-config-")
+    assert recent.status_code == 200
+    assert recent.json()["count"] == 1
+    first = recent.json()["receipts"][0]
+    assert first["probe"] == "exposure_config"
+    assert first["ok"] is True
+    assert first["receipt_id"] == body["receipt_id"]
+
+
+def test_system_probe_model_route_uses_self_url_without_returning_content(monkeypatch, tmp_path):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            assert url == "http://homestead-api:8000/model/route"
+            assert headers["x-homestead-surface"] == "pytest-model-probe"
+            assert json["max_tokens"] == 40
+            return httpx.Response(
+                200,
+                json={
+                    "gateway": "direct",
+                    "model": "openai/gpt-4.1-mini",
+                    "content": "private assistant content should not be returned",
+                    "finish_reason": "stop",
+                    "receipt_id": "model-route-probe",
+                },
+            )
+
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("HOMESTEAD_SELF_URL", "http://homestead-api:8000")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        "/ops/probes/run",
+        json={"probe": "model_route", "requesting_agent": "pytest-model-probe", "max_tokens": 40},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["results"][0]["probe"] == "model_route"
+    assert body["results"][0]["gateway"] == "direct"
+    assert body["results"][0]["model_route_receipt_id"] == "model-route-probe"
+    assert "private assistant content" not in response.text
+    receipt = json.loads(Path(body["json_path"]).read_text(encoding="utf-8"))
+    assert "private assistant content" not in json.dumps(receipt)
+
+
+def test_system_probe_failure_enters_review_queue(monkeypatch, tmp_path):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            return httpx.Response(503, json={"detail": "down"})
+
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("HOMESTEAD_SELF_URL", "http://homestead-api:8000")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    probe = client.post(
+        "/ops/probes/run",
+        json={"probe": "model_route", "requesting_agent": "pytest-fail-probe"},
+    )
+    review = client.get("/receipts/review?limit=5")
+
+    assert probe.status_code == 200
+    assert probe.json()["ok"] is False
+    assert review.status_code == 200
+    assert review.json()["count"] == 1
+    assert review.json()["receipts"][0]["probe"] == "model_route"
+    assert "review_required" in review.json()["receipts"][0]["review_reasons"]
 
 
 def test_keep_health_sync_writes_metadata_only_to_keep(monkeypatch, tmp_path):
