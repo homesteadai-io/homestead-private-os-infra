@@ -3,7 +3,7 @@
 This runbook deploys Homestead Private OS Infra v0 to the Hetzner CPX51 node.
 
 v0 is deployment-only:
-- no LiteLLM
+- no default LiteLLM dependency; `/model/route` defaults to direct OpenRouter
 - no GPU provider
 - no required Langfuse dependency; optional `/model/route` tracing is env-gated and fail-open
 - no SMTP/email
@@ -179,6 +179,24 @@ Verify OpenRouter variable names without printing secret values:
 
 ```bash
 grep -E '^(OPENROUTER_API_KEY|OPENROUTER_BASE_URL|OPENROUTER_DEFAULT_MODEL|OPENROUTER_HTTP_REFERER|OPENROUTER_APP_TITLE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
+Optional LiteLLM gateway support exists, but direct OpenRouter is the production default.
+
+```bash
+MODEL_GATEWAY=direct
+LITELLM_BASE_URL=http://127.0.0.1:4000
+LITELLM_API_KEY=
+LITELLM_DEFAULT_MODEL=haiku
+LITELLM_SEND_TEMPERATURE=false
+```
+
+Do not set `MODEL_GATEWAY=litellm` on the live Docker deployment until Homestead has a deliberate private container-to-LiteLLM path. The inherited LiteLLM service binds host loopback at `127.0.0.1:4000`; inside the Homestead API container, `127.0.0.1` is the API container, not the host.
+
+Verify LiteLLM variable names without printing values:
+
+```bash
+grep -E '^(MODEL_GATEWAY|LITELLM_BASE_URL|LITELLM_API_KEY|LITELLM_DEFAULT_MODEL|LITELLM_SEND_TEMPERATURE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
 ```
 
 Optional Langfuse tracing for `/model/route` is disabled by default. When enabled, it must not change model behavior and must fail open if Langfuse is unavailable.
