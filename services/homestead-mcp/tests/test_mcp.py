@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from fastapi.testclient import TestClient
 
 import app.main as main
@@ -65,6 +66,37 @@ def test_receipt_tools_dispatch_to_api(monkeypatch):
         ("GET", "/receipts/stats", None),
         ("GET", "/receipts/review?limit=3", None),
     ]
+
+
+def test_api_request_sends_mcp_surface_and_policy_token(monkeypatch):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def request(self, method, url, json=None, headers=None):
+            calls.append({"method": method, "url": url, "json": json, "headers": headers})
+            return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, url))
+
+    monkeypatch.setenv("HOMESTEAD_API_URL", "http://homestead-api:8000")
+    monkeypatch.setenv("HOMESTEAD_MCP_POLICY_TOKEN", "pytest-mcp-token")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert calls[0]["headers"] == {
+        "x-homestead-surface": "mcp",
+        "x-homestead-policy-token": "pytest-mcp-token",
+    }
+    assert "pytest-mcp-token" not in response.text
 
 
 def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):

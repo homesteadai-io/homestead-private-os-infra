@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import re
 import subprocess
@@ -463,22 +464,40 @@ def normalize_policy_surface(value: str | None) -> str:
     return token if token in KNOWN_POLICY_SURFACES else "unknown"
 
 
+def ops_policy_surface_token() -> str | None:
+    token = os.getenv("OPS_POLICY_SURFACE_TOKEN", "").strip()
+    return token or None
+
+
+def trusted_policy_surface_claim(http_request: Request | None) -> bool:
+    expected = ops_policy_surface_token()
+    if not expected or http_request is None:
+        return False
+    supplied = http_request.headers.get("x-homestead-policy-token", "").strip()
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
 def derive_policy_surface(
     *,
     requested_surface: str | None = None,
     requesting_agent: str | None = None,
     http_request: Request | None = None,
 ) -> str:
+    trusted_claim = trusted_policy_surface_claim(http_request)
     if requested_surface:
-        return normalize_policy_surface(requested_surface)
+        surface = normalize_policy_surface(requested_surface)
+        return surface if surface == "unknown" or trusted_claim else "unknown"
     if http_request:
         header_surface = http_request.headers.get("x-homestead-surface")
         if header_surface:
-            return normalize_policy_surface(header_surface)
+            surface = normalize_policy_surface(header_surface)
+            return surface if surface == "unknown" or trusted_claim else "unknown"
     if requesting_agent:
-        return normalize_policy_surface(requesting_agent)
+        surface = normalize_policy_surface(requesting_agent)
+        return surface if surface == "unknown" or trusted_claim else "unknown"
     if http_request:
-        return normalize_policy_surface(http_request.headers.get("user-agent"))
+        surface = normalize_policy_surface(http_request.headers.get("user-agent"))
+        return surface if surface == "unknown" or trusted_claim else "unknown"
     return "unknown"
 
 
@@ -489,6 +508,8 @@ def ops_policy_payload() -> dict[str, Any]:
         "mode": "manual_only",
         "default_decision": "deny",
         "manual_only": True,
+        "trusted_surface_token_required": True,
+        "trusted_surface_token_configured": ops_policy_surface_token() is not None,
         "scheduler_enabled": False,
         "autonomous_execution": False,
         "rules": [
@@ -719,6 +740,8 @@ def cloud_capabilities() -> dict[str, Any]:
             "status": "active",
             "mode": "manual_only",
             "default_decision": "deny",
+            "trusted_surface_token_required": True,
+            "trusted_surface_token_configured": ops_policy_surface_token() is not None,
         },
         "local_mode": {
             "enabled": False,
@@ -843,6 +866,8 @@ def capability_registry_payload() -> dict[str, Any]:
             "agent_safe": True,
             "mode": "manual_only",
             "default_decision": "deny",
+            "trusted_surface_token_required": True,
+            "trusted_surface_token_configured": ops_policy_surface_token() is not None,
             "write_access": "policy_decision_receipts",
             "scheduler_enabled": False,
             "autonomous_execution": False,
@@ -873,6 +898,7 @@ def capability_registry_payload() -> dict[str, Any]:
             "surface": ["/keep/health/sync", "homestead.sync_keep_health"],
             "agent_safe": True,
             "write_access": "append_operational_memory",
+            "policy_gate": "required",
             "policy": keep_health_policy(),
         },
         "local_mode": {
@@ -1062,6 +1088,8 @@ def manual_ops_catalog() -> dict[str, Any]:
             "check_endpoint": "/ops/policy/check",
             "default_decision": "deny",
             "policy_version": POLICY_VERSION,
+            "trusted_surface_token_required": True,
+            "trusted_surface_token_configured": ops_policy_surface_token() is not None,
             "scheduled_execution": "disabled",
             "autonomous_execution": "disabled",
             "public_exposure_changes": "forbidden",
@@ -1442,7 +1470,13 @@ def os_capabilities() -> dict[str, Any]:
 
 
 @app.post("/keep/health/sync")
-def keep_health_sync(request: KeepHealthSyncRequest) -> dict[str, Any]:
+def keep_health_sync(request: KeepHealthSyncRequest, http_request: Request) -> dict[str, Any]:
+    enforce_ops_policy(
+        operation_type="action",
+        operation="sync_keep_health",
+        requesting_agent=request.requesting_agent,
+        http_request=http_request,
+    )
     return sync_keep_health_summary(request.requesting_agent, request.note)
 
 

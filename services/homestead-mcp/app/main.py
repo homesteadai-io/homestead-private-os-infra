@@ -142,12 +142,16 @@ def api_url() -> str:
 
 
 async def api_request(method: str, path: str, json_body: dict[str, Any] | None = None) -> Any:
+    headers = {"x-homestead-surface": "mcp"}
+    policy_token = os.getenv("HOMESTEAD_MCP_POLICY_TOKEN", "").strip()
+    if policy_token:
+        headers["x-homestead-policy-token"] = policy_token
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.request(
             method,
             f"{api_url()}{path}",
             json=json_body,
-            headers={"x-homestead-surface": "mcp"},
+            headers=headers,
         )
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response.text)

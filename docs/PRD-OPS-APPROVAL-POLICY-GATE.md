@@ -152,6 +152,18 @@ requesting_agent
 user-agent
 ```
 
+Trusted surfaces must not be accepted from caller-supplied names alone. For v0,
+privileged surface claims such as `codex`, `mcp`, or `manual_cli` require a
+configured shared policy token:
+
+```text
+OPS_POLICY_SURFACE_TOKEN=<server-side API token>
+HOMESTEAD_MCP_POLICY_TOKEN=<same value for MCP facade>
+x-homestead-policy-token: <same value on trusted calls>
+```
+
+If the token is missing or wrong, treat the caller as `unknown`.
+
 Normalize common callers:
 
 ```text
@@ -287,11 +299,13 @@ Add API tests:
 
 - `GET /ops/policy` returns static policy with `default_decision=deny`
 - `POST /ops/policy/check` allows known safe action for known surface
+- trusted surface claims require the policy token; spoofed surfaces are denied
 - unknown surface/action is denied safely
 - denied action does not run the action/probe
 - denied action writes safe `ops_policy_decision` receipt with `review_required=true`
 - allowed manual action still runs and writes receipt
 - allowed system probe still runs and writes receipt
+- direct `/keep/health/sync` cannot bypass the `sync_keep_health` action policy
 - policy check does not leak secrets, headers, prompt, content, or raw env
 - malformed operation type/action/probe returns safe 400 or deny
 - old receipt formats do not break review queue/recent ops
@@ -337,9 +351,10 @@ curl.exe --max-time 10 http://100.112.20.36:8088/api/os/capabilities
 Allowed policy check:
 
 ```powershell
+$policyToken = "<set OPS_POLICY_SURFACE_TOKEN value>"
 $tmp = New-TemporaryFile
 Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"operation_type":"probe","operation":"node_status","requesting_agent":"codex-live-acceptance"}'
-curl.exe --max-time 10 -X POST http://100.112.20.36:8088/api/ops/policy/check -H "Content-Type: application/json" --data-binary "@$tmp"
+curl.exe --max-time 10 -X POST http://100.112.20.36:8088/api/ops/policy/check -H "Content-Type: application/json" -H "x-homestead-surface: codex" -H "x-homestead-policy-token: $policyToken" --data-binary "@$tmp"
 Remove-Item -LiteralPath $tmp
 ```
 
@@ -355,9 +370,10 @@ Remove-Item -LiteralPath $tmp
 Allowed operation still works:
 
 ```powershell
+$policyToken = "<set OPS_POLICY_SURFACE_TOKEN value>"
 $tmp = New-TemporaryFile
 Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"probe":"node_status","requesting_agent":"codex-live-acceptance"}'
-curl.exe --max-time 10 -X POST http://100.112.20.36:8088/api/ops/probes/run -H "Content-Type: application/json" --data-binary "@$tmp"
+curl.exe --max-time 10 -X POST http://100.112.20.36:8088/api/ops/probes/run -H "Content-Type: application/json" -H "x-homestead-surface: codex" -H "x-homestead-policy-token: $policyToken" --data-binary "@$tmp"
 Remove-Item -LiteralPath $tmp
 ```
 

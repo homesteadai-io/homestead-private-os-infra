@@ -14,6 +14,12 @@ from app.main import app
 
 
 client = TestClient(app)
+POLICY_TOKEN = "pytest-policy-token"
+
+
+def trusted_codex_headers(monkeypatch) -> dict[str, str]:
+    monkeypatch.setenv("OPS_POLICY_SURFACE_TOKEN", POLICY_TOKEN)
+    return {"x-homestead-surface": "codex", "x-homestead-policy-token": POLICY_TOKEN}
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +44,7 @@ def clear_langfuse_env(monkeypatch):
         "CADDY_HTTP_PORT",
         "CADDY_HTTPS_PORT",
         "HOMESTEAD_SELF_URL",
+        "OPS_POLICY_SURFACE_TOKEN",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -508,10 +515,12 @@ def test_ops_policy_surface_and_policy_check(monkeypatch, tmp_path):
     monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
     monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    headers = trusted_codex_headers(monkeypatch)
 
     policy = client.get("/ops/policy")
     allowed = client.post(
         "/ops/policy/check",
+        headers=headers,
         json={
             "operation_type": "probe",
             "operation": "node_status",
@@ -528,19 +537,32 @@ def test_ops_policy_surface_and_policy_check(monkeypatch, tmp_path):
     )
     needs_confirmation = client.post(
         "/ops/policy/check",
+        headers=headers,
         json={
             "operation_type": "action",
             "operation": "change_runtime_config",
             "requesting_agent": "codex-policy-test",
         },
     )
+    spoofed = client.post(
+        "/ops/policy/check",
+        headers={"x-homestead-surface": "codex"},
+        json={
+            "operation_type": "action",
+            "operation": "refresh_node_status",
+            "requesting_agent": "unknown",
+        },
+    )
 
     assert policy.status_code == 200
     assert policy.json()["default_decision"] == "deny"
     assert policy.json()["mode"] == "manual_only"
+    assert policy.json()["trusted_surface_token_required"] is True
+    assert policy.json()["trusted_surface_token_configured"] is True
     assert allowed.status_code == 200
     assert allowed.json()["decision"] == "allow_with_receipt"
     assert allowed.json()["ok"] is True
+    assert allowed.json()["surface"] == "codex"
     assert allowed.json()["receipt_required"] is True
     assert denied.status_code == 200
     assert denied.json()["decision"] == "deny"
@@ -548,8 +570,12 @@ def test_ops_policy_surface_and_policy_check(monkeypatch, tmp_path):
     assert needs_confirmation.status_code == 200
     assert needs_confirmation.json()["decision"] == "needs_confirmation"
     assert needs_confirmation.json()["requires_confirmation"] is True
-    combined = policy.text + allowed.text + denied.text + needs_confirmation.text
+    assert spoofed.status_code == 200
+    assert spoofed.json()["decision"] == "deny"
+    assert spoofed.json()["surface"] == "unknown"
+    combined = policy.text + allowed.text + denied.text + needs_confirmation.text + spoofed.text
     assert "super-secret-openrouter" not in combined
+    assert POLICY_TOKEN not in combined
 
 
 def test_manual_action_refresh_node_status_writes_receipt(monkeypatch, tmp_path):
@@ -558,9 +584,11 @@ def test_manual_action_refresh_node_status_writes_receipt(monkeypatch, tmp_path)
     monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
     monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
     monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    headers = trusted_codex_headers(monkeypatch)
 
     response = client.post(
         "/ops/actions/run",
+        headers=headers,
         json={
             "action": "refresh_node_status",
             "requesting_agent": "codex-manual-ops",
@@ -588,15 +616,46 @@ def test_manual_action_refresh_node_status_writes_receipt(monkeypatch, tmp_path)
     assert "super-secret-openrouter" not in json.dumps(receipt)
 
 
+def test_spoofed_surface_cannot_run_allowed_manual_action(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("OPS_POLICY_SURFACE_TOKEN", POLICY_TOKEN)
+
+    response = client.post(
+        "/ops/actions/run",
+        headers={"x-homestead-surface": "codex"},
+        json={"action": "refresh_node_status", "requesting_agent": "spoofed-codex"},
+    )
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert detail["decision"] == "deny"
+    assert detail["surface"] == "unknown"
+    assert detail["operation"] == "refresh_node_status"
+    assert list(receipts.rglob("manual-ops-action-refresh-node-status-*.json")) == []
+    receipt_paths = list(receipts.rglob("ops-policy-action-refresh-node-status-*.json"))
+    assert len(receipt_paths) == 1
+    receipt = json.loads(receipt_paths[0].read_text(encoding="utf-8"))
+    assert receipt["task"] == "ops_policy_decision"
+    assert receipt["review_required"] is True
+    assert receipt["metadata"]["surface"] == "unknown"
+    assert receipt["metadata"]["allowed"] is False
+    assert POLICY_TOKEN not in response.text
+
+
 def test_manual_action_sync_keep_health_records_files_changed(monkeypatch, tmp_path):
     init_repo(tmp_path)
     receipts = tmp_path / "receipts"
     monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
     monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
     monkeypatch.setenv("KEEP_HEALTH_DIR", "System Receipts/Homestead Health")
+    headers = trusted_codex_headers(monkeypatch)
 
     response = client.post(
         "/ops/actions/run",
+        headers=headers,
         json={"action": "sync_keep_health", "requesting_agent": "codex-manual-sync"},
     )
 
@@ -639,9 +698,11 @@ def test_system_probe_exposure_and_recent_ops(monkeypatch, tmp_path):
     receipts = tmp_path / "receipts"
     monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
     monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    headers = trusted_codex_headers(monkeypatch)
 
     probe = client.post(
         "/ops/probes/run",
+        headers=headers,
         json={"probe": "exposure_config", "requesting_agent": "codex-probe"},
     )
     recent = client.get("/ops/recent?limit=5")
@@ -689,9 +750,11 @@ def test_system_probe_model_route_uses_self_url_without_returning_content(monkey
     monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
     monkeypatch.setenv("HOMESTEAD_SELF_URL", "http://homestead-api:8000")
     monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    headers = trusted_codex_headers(monkeypatch)
 
     response = client.post(
         "/ops/probes/run",
+        headers=headers,
         json={"probe": "model_route", "requesting_agent": "codex-model-probe", "max_tokens": 40},
     )
 
@@ -724,9 +787,11 @@ def test_system_probe_failure_enters_review_queue(monkeypatch, tmp_path):
     monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
     monkeypatch.setenv("HOMESTEAD_SELF_URL", "http://homestead-api:8000")
     monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    headers = trusted_codex_headers(monkeypatch)
 
     probe = client.post(
         "/ops/probes/run",
+        headers=headers,
         json={"probe": "model_route", "requesting_agent": "codex-fail-probe"},
     )
     review = client.get("/receipts/review?limit=5")
@@ -747,6 +812,7 @@ def test_keep_health_sync_writes_metadata_only_to_keep(monkeypatch, tmp_path):
     monkeypatch.setenv("KEEP_HEALTH_DIR", "System Receipts/Homestead Health")
     monkeypatch.setenv("MODEL_GATEWAY", "direct")
     monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    headers = trusted_codex_headers(monkeypatch)
     write_test_receipt(
         receipts,
         "2026-06-28",
@@ -772,6 +838,7 @@ def test_keep_health_sync_writes_metadata_only_to_keep(monkeypatch, tmp_path):
 
     response = client.post(
         "/keep/health/sync",
+        headers=headers,
         json={"requesting_agent": "pytest-operator", "note": "acceptance sync"},
     )
 
@@ -797,6 +864,38 @@ def test_keep_health_sync_writes_metadata_only_to_keep(monkeypatch, tmp_path):
     assert "acceptance sync" in combined
     assert "secret prompt" not in combined
     assert "super-secret-openrouter" not in combined
+
+
+def test_keep_health_sync_direct_path_is_gated(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("KEEP_HEALTH_DIR", "System Receipts/Homestead Health")
+    monkeypatch.setenv("OPS_POLICY_SURFACE_TOKEN", POLICY_TOKEN)
+
+    response = client.post(
+        "/keep/health/sync",
+        headers={"x-homestead-surface": "codex"},
+        json={"requesting_agent": "spoofed-codex", "note": "should not write"},
+    )
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert detail["decision"] == "deny"
+    assert detail["surface"] == "unknown"
+    assert detail["operation"] == "sync_keep_health"
+    assert detail["receipt_id"].startswith("ops-policy-action-sync-keep-health-")
+    assert not (tmp_path / "System Receipts" / "Homestead Health").exists()
+    receipt_paths = list(receipts.rglob("ops-policy-action-sync-keep-health-*.json"))
+    assert len(receipt_paths) == 1
+    receipt = json.loads(receipt_paths[0].read_text(encoding="utf-8"))
+    assert receipt["task"] == "ops_policy_decision"
+    assert receipt["review_required"] is True
+    assert receipt["metadata"]["surface"] == "unknown"
+    assert receipt["metadata"]["policy_decision"] == "deny"
+    assert "should not write" not in json.dumps(receipt)
+    assert POLICY_TOKEN not in response.text
 
 
 def test_model_route_requires_openrouter_config(monkeypatch):
