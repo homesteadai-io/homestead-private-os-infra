@@ -164,6 +164,19 @@ class KeepHealthSyncRequest(BaseModel):
     note: str | None = None
 
 
+class ManualActionRequest(BaseModel):
+    action: str = Field(..., min_length=1)
+    requesting_agent: str = "unknown"
+    note: str | None = None
+
+
+class SystemProbeRequest(BaseModel):
+    probe: str = Field(default="all", min_length=1)
+    requesting_agent: str = "unknown"
+    note: str | None = None
+    max_tokens: int = Field(default=50, ge=1, le=200)
+
+
 def clean_run_id(value: str | None) -> str:
     raw = value or f"run-{uuid4().hex[:12]}"
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-._")
@@ -218,6 +231,8 @@ def receipt_summary(json_path: Path) -> dict[str, Any]:
         "review_required": data.get("review_required"),
         "route": metadata.get("route"),
         "gateway": metadata.get("gateway"),
+        "action": metadata.get("action"),
+        "probe": metadata.get("probe"),
         "requested_model": metadata.get("requested_model"),
         "model_used": metadata.get("model_used") or data.get("model_used"),
         "latency_ms": metadata.get("latency_ms"),
@@ -302,6 +317,23 @@ def receipt_review_item(summary: dict[str, Any]) -> dict[str, Any]:
         **summary,
         "review_reasons": receipt_review_reasons(summary),
         "attention": "review",
+    }
+
+
+def ops_receipt_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "receipt_id": summary.get("receipt_id"),
+        "timestamp": summary.get("timestamp"),
+        "task": summary.get("task"),
+        "requesting_agent": summary.get("requesting_agent"),
+        "verdict": summary.get("verdict"),
+        "review_required": summary.get("review_required"),
+        "action": summary.get("action"),
+        "probe": summary.get("probe"),
+        "ok": summary.get("ok"),
+        "error_summary": summary.get("error_summary"),
+        "receipt_path": summary.get("markdown_path"),
+        "json_path": summary.get("json_path"),
     }
 
 
@@ -520,6 +552,24 @@ def capability_registry_payload() -> dict[str, Any]:
             "agent_safe": True,
             "write_access": "none",
         },
+        "manual_ops": {
+            "enabled": True,
+            "status": "manual_only",
+            "surface": [
+                "/ops/actions",
+                "/ops/actions/run",
+                "/ops/probes/run",
+                "/ops/recent",
+                "homestead.list_manual_ops",
+                "homestead.run_manual_action",
+                "homestead.run_system_probe",
+                "homestead.list_recent_ops",
+            ],
+            "agent_safe": True,
+            "write_access": "explicit_receipt_backed_actions",
+            "scheduler_enabled": False,
+            "autonomous_execution": False,
+        },
         "keep_health_sync": {
             "enabled": True,
             "status": "explicit_only",
@@ -583,6 +633,10 @@ def os_context_payload() -> dict[str, Any]:
             "homestead.os_status",
             "homestead.os_context",
             "homestead.os_capabilities",
+            "homestead.list_manual_ops",
+            "homestead.run_manual_action",
+            "homestead.run_system_probe",
+            "homestead.list_recent_ops",
             "homestead.sync_keep_health",
             "homestead.receipts_review",
             "homestead.list_recent_receipts",
@@ -673,6 +727,364 @@ def sync_keep_health_summary(requesting_agent: str, note: str | None = None) -> 
     }
 
 
+def manual_ops_catalog() -> dict[str, Any]:
+    return {
+        "generated_at": utc_now(),
+        "mode": "manual_only",
+        "scheduler_enabled": False,
+        "runner_enabled": False,
+        "actions": {
+            "refresh_node_status": {
+                "description": "Read current node status and write a manual action receipt.",
+                "writes": ["receipt"],
+            },
+            "sync_keep_health": {
+                "description": "Run explicit Keep health sync and write a manual action receipt.",
+                "writes": ["keep_health_summary", "receipt"],
+            },
+            "write_status_receipt": {
+                "description": "Write a receipt containing current node status metadata.",
+                "writes": ["receipt"],
+            },
+        },
+        "probes": {
+            "node_status": {"description": "Read node status and confirm the API can self-report."},
+            "receipt_write": {"description": "Write a probe receipt through the receipt writer."},
+            "keep_health_sync": {"description": "Run explicit Keep health sync and receipt the result."},
+            "model_route": {"description": "Make a low-token /model/route call through the configured gateway."},
+            "litellm_private_health": {"description": "Check private LiteLLM /health when configured."},
+            "exposure_config": {"description": "Check configured exposure assumptions remain private."},
+            "all": {"description": "Run every probe once, sequentially."},
+        },
+        "policy": {
+            "scheduled_execution": "disabled",
+            "autonomous_execution": "disabled",
+            "public_exposure_changes": "forbidden",
+            "lite_llm_gateway_changes": "forbidden",
+            "prompt_content_capture": "disabled_by_default",
+        },
+    }
+
+
+def public_summary_status(status: dict[str, Any]) -> dict[str, Any]:
+    latest = status["receipts"].get("latest") or {}
+    return {
+        "ok": status.get("ok"),
+        "generated_at": status.get("generated_at"),
+        "environment": status.get("environment"),
+        "git_branch": status.get("git", {}).get("branch"),
+        "git_dirty": status.get("git", {}).get("dirty"),
+        "model_gateway": status.get("model_gateway", {}).get("active"),
+        "langfuse_enabled": status.get("langfuse", {}).get("enabled"),
+        "receipt_count": status.get("receipts", {}).get("total"),
+        "review_required": status.get("receipts", {}).get("review_required"),
+        "attention_required": status.get("receipts", {}).get("attention_required"),
+        "latest_receipt": latest.get("receipt_id"),
+        "local_mode_enabled": status.get("capabilities", {}).get("local_mode", {}).get("enabled"),
+        "runner_enabled": status.get("capabilities", {}).get("runner", {}).get("enabled"),
+        "alerts_enabled": status.get("capabilities", {}).get("alerts", {}).get("enabled"),
+        "dashboard_enabled": status.get("capabilities", {}).get("dashboard", {}).get("enabled"),
+    }
+
+
+def safe_exception_summary(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, str):
+            return detail[:240]
+        if isinstance(detail, dict):
+            allowed = {key: detail.get(key) for key in ["error", "missing", "gateway", "upstream_status"] if key in detail}
+            return json.dumps(allowed, sort_keys=True)[:240]
+    return exc.__class__.__name__
+
+
+def ops_receipt_payload(
+    *,
+    task: str,
+    name: str,
+    requesting_agent: str,
+    ok: bool,
+    actions_taken: list[str],
+    metadata: dict[str, Any],
+    note: str | None = None,
+    files_changed: list[str] | None = None,
+    error_summary: str | None = None,
+) -> dict[str, Any]:
+    safe_name = clean_run_id(name.replace("_", "-"))
+    run_id = f"{task.replace('_', '-')}-{safe_name}-{uuid4().hex[:8]}"
+    clean_metadata = {
+        **metadata,
+        "ok": ok,
+        "manual_only": True,
+    }
+    if task == "manual_ops_action":
+        clean_metadata["action"] = name
+    if task == "system_probe":
+        clean_metadata["probe"] = name
+    if note:
+        clean_metadata["note"] = note[:240]
+    if error_summary:
+        clean_metadata["error_summary"] = error_summary[:240]
+    return {
+        "run_id": run_id,
+        "timestamp": utc_now(),
+        "requesting_agent": requesting_agent or "unknown",
+        "task": task,
+        "files_read": [],
+        "model_used": "not_applicable_v0",
+        "actions_taken": actions_taken,
+        "files_changed": files_changed or [],
+        "review_required": not ok,
+        "verdict": "ok" if ok else "error",
+        "metadata": clean_metadata,
+    }
+
+
+def write_ops_receipt(payload: dict[str, Any]) -> dict[str, str]:
+    result = write_receipt_payload(payload)
+    return {
+        "receipt_id": result["run_id"],
+        "receipt_path": result["markdown_path"],
+        "json_path": result["json_path"],
+    }
+
+
+def recent_ops_receipts(limit: int = 20) -> dict[str, Any]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    summaries = [
+        summary
+        for summary in sorted_receipt_summaries(all_receipt_json_files())
+        if summary.get("task") in {"manual_ops_action", "system_probe"}
+    ]
+    limited = summaries[:limit]
+    return {
+        "generated_at": utc_now(),
+        "limit": limit,
+        "count": len(limited),
+        "total_ops_receipts": len(summaries),
+        "receipts": [ops_receipt_summary(summary) for summary in limited],
+    }
+
+
+def run_manual_action_payload(request: ManualActionRequest) -> dict[str, Any]:
+    action = request.action.strip().lower()
+    catalog = manual_ops_catalog()["actions"]
+    if action not in catalog:
+        raise HTTPException(status_code=400, detail=f"unknown manual action: {request.action}")
+
+    files_changed: list[str] = []
+    try:
+        if action == "refresh_node_status":
+            status = node_status_payload()
+            result = {"status": public_summary_status(status)}
+            actions_taken = ["refreshed node status on explicit request"]
+            metadata = {"action_result": result["status"]}
+        elif action == "sync_keep_health":
+            sync = sync_keep_health_summary(request.requesting_agent, request.note)
+            files_changed = sync["files_changed"]
+            result = {
+                "generated_at": sync["generated_at"],
+                "health_dir": sync["health_dir"],
+                "files_changed": files_changed,
+            }
+            actions_taken = ["synced Keep health memory on explicit request"]
+            metadata = {"action_result": result}
+        else:
+            status = node_status_payload()
+            result = {"status": public_summary_status(status)}
+            actions_taken = ["wrote current node status receipt on explicit request"]
+            metadata = {"action_result": result["status"]}
+
+        receipt = write_ops_receipt(
+            ops_receipt_payload(
+                task="manual_ops_action",
+                name=action,
+                requesting_agent=request.requesting_agent,
+                ok=True,
+                actions_taken=actions_taken,
+                metadata=metadata,
+                note=request.note,
+                files_changed=files_changed,
+            )
+        )
+        return {"ok": True, "action": action, "mode": "manual_only", "result": result, **receipt}
+    except Exception as exc:
+        error_summary = safe_exception_summary(exc)
+        try:
+            receipt = write_ops_receipt(
+                ops_receipt_payload(
+                    task="manual_ops_action",
+                    name=action,
+                    requesting_agent=request.requesting_agent,
+                    ok=False,
+                    actions_taken=[f"manual action failed safely: {action}"],
+                    metadata={},
+                    note=request.note,
+                    error_summary=error_summary,
+                )
+            )
+        except Exception:
+            receipt = {"receipt_error": "manual action receipt write failed"}
+        return {
+            "ok": False,
+            "action": action,
+            "mode": "manual_only",
+            "error_summary": error_summary,
+            **receipt,
+        }
+
+
+async def probe_node_status() -> dict[str, Any]:
+    status = node_status_payload()
+    return {"ok": bool(status.get("ok")), "reason": "node status returned", "status": public_summary_status(status)}
+
+
+async def probe_receipt_write(requesting_agent: str, note: str | None) -> dict[str, Any]:
+    receipt = write_ops_receipt(
+        ops_receipt_payload(
+            task="system_probe",
+            name="receipt_write",
+            requesting_agent=requesting_agent,
+            ok=True,
+            actions_taken=["proved receipt writer with an explicit system probe"],
+            metadata={"probe_result": {"ok": True, "reason": "receipt writer accepted append-only receipt"}},
+            note=note,
+        )
+    )
+    return {"ok": True, "reason": "receipt writer accepted append-only receipt", **receipt}
+
+
+async def probe_keep_health_sync(requesting_agent: str, note: str | None) -> dict[str, Any]:
+    sync = sync_keep_health_summary(requesting_agent, note)
+    return {
+        "ok": bool(sync.get("ok")),
+        "reason": "Keep health sync completed",
+        "health_dir": sync.get("health_dir"),
+        "files_changed": sync.get("files_changed", []),
+    }
+
+
+async def probe_model_route(requesting_agent: str, max_tokens: int) -> dict[str, Any]:
+    self_url = os.getenv("HOMESTEAD_SELF_URL", "http://127.0.0.1:8000").rstrip("/")
+    payload = {
+        "prompt": "Say hello from Homestead system probe in one sentence.",
+        "max_tokens": max_tokens,
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            f"{self_url}/model/route",
+            headers={"x-homestead-surface": requesting_agent[:120]},
+            json=payload,
+        )
+    if response.status_code >= 400:
+        return {
+            "ok": False,
+            "reason": "model route probe failed",
+            "status_code": response.status_code,
+        }
+    data = response.json()
+    return {
+        "ok": True,
+        "reason": "model route returned assistant content",
+        "gateway": data.get("gateway"),
+        "model": data.get("model"),
+        "finish_reason": data.get("finish_reason"),
+        "model_route_receipt_id": data.get("receipt_id"),
+    }
+
+
+async def probe_litellm_private_health() -> dict[str, Any]:
+    gateway = model_gateway_status()["litellm"]
+    if not gateway["configured"]:
+        return {"ok": True, "skipped": True, "reason": "LiteLLM is optional and not fully configured"}
+    if not gateway["private_path_expected"]:
+        return {"ok": False, "reason": "LiteLLM base URL is not a private expected path"}
+    config = litellm_config()
+    headers = {"Authorization": bearer_header(config["api_key"])}
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(f"{config['base_url'].rstrip('/')}/health", headers=headers)
+    return {
+        "ok": response.status_code < 400,
+        "reason": "LiteLLM private health endpoint returned" if response.status_code < 400 else "LiteLLM health failed",
+        "status_code": response.status_code,
+        "base_url": config["base_url"],
+    }
+
+
+async def probe_exposure_config() -> dict[str, Any]:
+    exposure = exposure_assumptions()
+    ok = all(
+        bool(exposure.get(name))
+        for name in [
+            "homestead_public_expected_closed",
+            "langfuse_public_expected_closed",
+            "minio_public_expected_closed",
+            "litellm_public_expected_closed",
+            "litellm_tailscale_expected_closed",
+        ]
+    )
+    return {
+        "ok": ok,
+        "reason": "configured exposure assumptions remain private" if ok else "configured exposure assumptions need review",
+        "exposure": exposure,
+    }
+
+
+async def run_one_probe(probe: str, request: SystemProbeRequest) -> dict[str, Any]:
+    if probe == "node_status":
+        return await probe_node_status()
+    if probe == "receipt_write":
+        return await probe_receipt_write(request.requesting_agent, request.note)
+    if probe == "keep_health_sync":
+        return await probe_keep_health_sync(request.requesting_agent, request.note)
+    if probe == "model_route":
+        return await probe_model_route(request.requesting_agent, request.max_tokens)
+    if probe == "litellm_private_health":
+        return await probe_litellm_private_health()
+    if probe == "exposure_config":
+        return await probe_exposure_config()
+    raise HTTPException(status_code=400, detail=f"unknown system probe: {probe}")
+
+
+async def run_system_probe_payload(request: SystemProbeRequest) -> dict[str, Any]:
+    probe = request.probe.strip().lower()
+    known = set(manual_ops_catalog()["probes"].keys())
+    if probe not in known:
+        raise HTTPException(status_code=400, detail=f"unknown system probe: {request.probe}")
+
+    probes = [name for name in known if name != "all"] if probe == "all" else [probe]
+    results: list[dict[str, Any]] = []
+    for name in sorted(probes):
+        try:
+            result = await run_one_probe(name, request)
+        except Exception as exc:
+            result = {"ok": False, "reason": safe_exception_summary(exc)}
+        results.append({"probe": name, **result})
+
+    ok = all(result.get("ok") is True for result in results)
+    error_summary = None if ok else "one or more system probes failed"
+    receipt = write_ops_receipt(
+        ops_receipt_payload(
+            task="system_probe",
+            name=probe,
+            requesting_agent=request.requesting_agent,
+            ok=ok,
+            actions_taken=[f"ran explicit system probe: {probe}"],
+            metadata={"probe_results": results},
+            note=request.note,
+            error_summary=error_summary,
+        )
+    )
+    return {
+        "ok": ok,
+        "probe": probe,
+        "mode": "manual_only",
+        "results": results,
+        **receipt,
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -706,6 +1118,26 @@ def os_capabilities() -> dict[str, Any]:
 @app.post("/keep/health/sync")
 def keep_health_sync(request: KeepHealthSyncRequest) -> dict[str, Any]:
     return sync_keep_health_summary(request.requesting_agent, request.note)
+
+
+@app.get("/ops/actions")
+def ops_actions() -> dict[str, Any]:
+    return manual_ops_catalog()
+
+
+@app.post("/ops/actions/run")
+def ops_action_run(request: ManualActionRequest) -> dict[str, Any]:
+    return run_manual_action_payload(request)
+
+
+@app.post("/ops/probes/run")
+async def ops_probe_run(request: SystemProbeRequest) -> dict[str, Any]:
+    return await run_system_probe_payload(request)
+
+
+@app.get("/ops/recent")
+def ops_recent(limit: int = 20) -> dict[str, Any]:
+    return recent_ops_receipts(limit)
 
 
 @app.get("/receipts/recent")

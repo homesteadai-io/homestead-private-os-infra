@@ -85,6 +85,31 @@ TOOLS = [
         "input_schema": {},
     },
     {
+        "name": "homestead.list_manual_ops",
+        "description": "List manual-only Homestead actions and system probes.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.run_manual_action",
+        "description": "Run one explicit receipt-backed manual Homestead action.",
+        "input_schema": {"action": "string", "requesting_agent": "string optional", "note": "string optional"},
+    },
+    {
+        "name": "homestead.run_system_probe",
+        "description": "Run one explicit receipt-backed Homestead system probe.",
+        "input_schema": {
+            "probe": "string optional",
+            "requesting_agent": "string optional",
+            "note": "string optional",
+            "max_tokens": "integer optional",
+        },
+    },
+    {
+        "name": "homestead.list_recent_ops",
+        "description": "List recent manual ops and system probe receipts.",
+        "input_schema": {"limit": "integer optional"},
+    },
+    {
         "name": "homestead.sync_keep_health",
         "description": "Write metadata-only Homestead health summaries into The Keep.",
         "input_schema": {"requesting_agent": "string optional", "note": "string optional"},
@@ -167,6 +192,15 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         return await api_request("GET", "/os/context")
     if tool == "homestead.os_capabilities":
         return await api_request("GET", "/os/capabilities")
+    if tool == "homestead.list_manual_ops":
+        return await api_request("GET", "/ops/actions")
+    if tool == "homestead.run_manual_action":
+        return await api_request("POST", "/ops/actions/run", arguments)
+    if tool == "homestead.run_system_probe":
+        return await api_request("POST", "/ops/probes/run", arguments)
+    if tool == "homestead.list_recent_ops":
+        limit = int(arguments.get("limit", 20))
+        return await api_request("GET", f"/ops/recent?limit={limit}")
     if tool == "homestead.sync_keep_health":
         return await api_request("POST", "/keep/health/sync", arguments)
 

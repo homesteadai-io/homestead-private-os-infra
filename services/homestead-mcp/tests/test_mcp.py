@@ -26,6 +26,10 @@ def test_tools_surface_lists_required_homestead_tools():
     assert "homestead.os_status" in names
     assert "homestead.os_context" in names
     assert "homestead.os_capabilities" in names
+    assert "homestead.list_manual_ops" in names
+    assert "homestead.run_manual_action" in names
+    assert "homestead.run_system_probe" in names
+    assert "homestead.list_recent_ops" in names
     assert "homestead.sync_keep_health" in names
 
 
@@ -74,6 +78,22 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
     os_status = client.post("/call", json={"tool": "homestead.os_status", "arguments": {}})
     os_context = client.post("/call", json={"tool": "homestead.os_context", "arguments": {}})
     os_capabilities = client.post("/call", json={"tool": "homestead.os_capabilities", "arguments": {}})
+    list_manual_ops = client.post("/call", json={"tool": "homestead.list_manual_ops", "arguments": {}})
+    run_action = client.post(
+        "/call",
+        json={
+            "tool": "homestead.run_manual_action",
+            "arguments": {"action": "refresh_node_status", "requesting_agent": "pytest"},
+        },
+    )
+    run_probe = client.post(
+        "/call",
+        json={
+            "tool": "homestead.run_system_probe",
+            "arguments": {"probe": "node_status", "requesting_agent": "pytest"},
+        },
+    )
+    recent_ops = client.post("/call", json={"tool": "homestead.list_recent_ops", "arguments": {"limit": 4}})
     sync = client.post(
         "/call",
         json={
@@ -86,11 +106,19 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
     assert os_status.status_code == 200
     assert os_context.status_code == 200
     assert os_capabilities.status_code == 200
+    assert list_manual_ops.status_code == 200
+    assert run_action.status_code == 200
+    assert run_probe.status_code == 200
+    assert recent_ops.status_code == 200
     assert sync.status_code == 200
     assert calls == [
         ("GET", "/node/status", None),
         ("GET", "/os/status", None),
         ("GET", "/os/context", None),
         ("GET", "/os/capabilities", None),
+        ("GET", "/ops/actions", None),
+        ("POST", "/ops/actions/run", {"action": "refresh_node_status", "requesting_agent": "pytest"}),
+        ("POST", "/ops/probes/run", {"probe": "node_status", "requesting_agent": "pytest"}),
+        ("GET", "/ops/recent?limit=4", None),
         ("POST", "/keep/health/sync", {"requesting_agent": "pytest", "note": "sync"}),
     ]

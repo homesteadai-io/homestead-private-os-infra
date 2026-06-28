@@ -818,7 +818,109 @@ Agents may read it for current node context.
 Agents must not auto-commit it or write prompt/content/secrets into it.
 ```
 
-## 19. Reboot Survival
+## 19. Manual Ops And System Probes
+
+Manual ops are explicit, receipt-backed commands. No scheduler, runner, alert system, dashboard, local mode, or autonomous workflow should be enabled.
+
+From Adam's laptop:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/ops/actions
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/ops/recent?limit=20
+```
+
+Expected:
+
+```text
+mode=manual_only
+scheduler_enabled=false
+runner_enabled=false
+actions include refresh_node_status, sync_keep_health, write_status_receipt
+probes include node_status, receipt_write, keep_health_sync, model_route, litellm_private_health, exposure_config, all
+```
+
+Run a low-risk manual action:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"action":"refresh_node_status","requesting_agent":"acceptance-manual-op","note":"manual ops acceptance"}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/ops/actions/run -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+ok=true
+mode=manual_only
+receipt_id present
+task=manual_ops_action in the written receipt
+no prompt/content/API keys/raw env values returned
+```
+
+Run explicit probes:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"probe":"node_status","requesting_agent":"acceptance-probe"}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/ops/probes/run -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"probe":"model_route","requesting_agent":"acceptance-model-probe","max_tokens":50}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/api/ops/probes/run -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+ok=true for node_status
+model_route probe returns gateway/model/finish_reason but not assistant content
+receipt_id present
+task=system_probe in the written receipt
+failed probes are review_required=true and visible through /api/receipts/review
+```
+
+MCP tools:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.list_manual_ops","arguments":{}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.run_system_probe","arguments":{"probe":"exposure_config","requesting_agent":"acceptance-mcp-probe"}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected MCP tools:
+
+```text
+homestead.list_manual_ops
+homestead.run_manual_action
+homestead.run_system_probe
+homestead.list_recent_ops
+```
+
+Public exposure should remain closed after manual ops:
+
+```powershell
+curl.exe --max-time 10 http://<server-ip>:8088/health
+curl.exe --max-time 10 http://<server-ip>:4000/health
+curl.exe --max-time 10 http://<server-ip>:3000/
+curl.exe --max-time 10 http://<server-ip>:9090/minio/health/live
+```
+
+Expected:
+
+```text
+all public probes fail
+```
+
+## 20. Reboot Survival
 
 Run only when brief server downtime is acceptable:
 
