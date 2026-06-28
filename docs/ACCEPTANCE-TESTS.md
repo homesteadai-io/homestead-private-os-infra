@@ -300,6 +300,54 @@ result.latest_commit
 result.dirty
 ```
 
+## 10A. Door Cold Boot Concept Surface
+
+The Door phrase is:
+
+```text
+Boot Homestead.
+```
+
+From Adam's laptop:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/agent/boot
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"query":"Homestead Private OS output capsules","project_id":"homestead-private-os","max_results":5}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/keep/concepts/search -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+agent_boot.door.phrase = Boot Homestead.
+agent_boot.concepts.must_cite = concept_id
+concept search returns count >= 1
+concepts[].concept_id is present
+concepts[].project_id = homestead-private-os
+concepts[].source_keep_path is a Keep-relative path
+```
+
+MCP equivalent:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.keep_concept_search","arguments":{"query":"Homestead Private OS output capsules","project_id":"homestead-private-os","max_results":5}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+result.concepts[0].concept_id
+result.concepts[0].source_keep_path
+```
+
+Full Phase 1 remains `NEEDS_DECISION` until Adam names the second live project to ingest and cold-test beside `homestead-private-os`.
+
 ## 11. OpenRouter Model Route Works
 
 Run on Hetzner without printing secret values:

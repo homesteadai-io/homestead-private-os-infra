@@ -54,7 +54,15 @@ def init_repo(path: Path) -> None:
     subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
-    (path / "index.md").write_text("# Homestead\n\nPrivate OS markdown shelf.\n", encoding="utf-8")
+    (path / "index.md").write_text(
+        "---\n"
+        "title: Homestead Private OS\n"
+        "project_id: homestead-private-os\n"
+        "---\n\n"
+        "# Homestead\n\n"
+        "Private OS markdown shelf with command sessions and output capsules.\n",
+        encoding="utf-8",
+    )
     subprocess.run(["git", "add", "index.md"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True, capture_output=True)
 
@@ -78,7 +86,11 @@ def test_repo_status_and_search(monkeypatch, tmp_path):
     search = client.post("/search", json={"query": "Private OS"})
     assert search.status_code == 200
     assert search.json()["count"] == 1
-    assert search.json()["results"][0]["path"] == "/index.md"
+    result = search.json()["results"][0]
+    assert result["path"] == "/index.md"
+    assert result["source_keep_path"] == "/index.md"
+    assert result["concept_id"].startswith("concept-index-")
+    assert result["project_id"] == "homestead-private-os"
 
 
 def test_context_pack_and_read_concept(monkeypatch, tmp_path):
@@ -88,10 +100,53 @@ def test_context_pack_and_read_concept(monkeypatch, tmp_path):
     pack = client.post("/context-pack", json={"task": "Homestead"})
     assert pack.status_code == 200
     assert pack.json()["files"][0]["path"] == "/index.md"
+    assert pack.json()["files"][0]["concept_id"].startswith("concept-index-")
 
     concept = client.post("/read-concept", json={"path": "/index.md"})
     assert concept.status_code == 200
+    assert concept.json()["concept_id"] == pack.json()["files"][0]["concept_id"]
+    assert concept.json()["project_id"] == "homestead-private-os"
     assert "Private OS" in concept.json()["content"]
+
+
+def test_keep_concept_index_search_and_read(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    second = tmp_path / "projects" / "frostbite.md"
+    second.parent.mkdir()
+    second.write_text(
+        "---\n"
+        "title: Frostbite Workflow\n"
+        "project_id: frostbite\n"
+        "---\n\n"
+        "# Frostbite\n\n"
+        "A real project context lane for campaign and operational workflow memory.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "projects/frostbite.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "add frostbite"], cwd=tmp_path, check=True, capture_output=True)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+
+    concepts = client.get("/keep/concepts", params={"project_id": "homestead-private-os"})
+    assert concepts.status_code == 200
+    body = concepts.json()
+    assert body["mode"] == "read_only_existing_keep_markdown"
+    assert body["count"] == 1
+    concept_id = body["concepts"][0]["concept_id"]
+    assert body["concepts"][0]["title"] == "Homestead Private OS"
+
+    search = client.post(
+        "/keep/concepts/search",
+        json={"query": "campaign workflow", "project_id": "frostbite", "max_results": 5},
+    )
+    assert search.status_code == 200
+    assert search.json()["count"] == 1
+    assert search.json()["concepts"][0]["project_id"] == "frostbite"
+    assert search.json()["concepts"][0]["concept_id"].startswith("concept-projects-frostbite-")
+
+    read = client.get(f"/keep/concepts/{concept_id}")
+    assert read.status_code == 200
+    assert read.json()["source_keep_path"] == "/index.md"
+    assert "command sessions" in read.json()["content"]
 
 
 def test_receipt_create_is_append_only(monkeypatch, tmp_path):
@@ -468,7 +523,16 @@ def test_agent_boot_and_projects_are_agent_safe_without_secrets(monkeypatch, tmp
     assert body["loop_protocol"]["needs_decision"] == "escalate_to_adam"
     assert body["project_registry"]["default_project_id"] == "homestead-private-os"
     assert body["active_project"]["project_id"] == "homestead-private-os"
+    assert body["door"]["phrase"] == "Boot Homestead."
+    assert body["door"]["not_a_login_flow"] is True
+    assert body["concepts"]["must_cite"] == "concept_id"
+    assert body["concepts"]["homestead_private_os_seed"][0]["concept_id"].startswith("concept-index-")
+    assert body["concepts"]["homestead_private_os_seed"][0]["project_id"] == "homestead-private-os"
+    assert body["concepts"]["needs_decision"].startswith("Name one other live project")
+    assert body["cold_boot_test"]["status"] == "partial_until_second_project_named"
     assert body["capabilities"]["entries"]["agent_boot"]["enabled"] is True
+    assert body["capabilities"]["entries"]["keep_concepts"]["enabled"] is True
+    assert body["capabilities"]["entries"]["keep_concepts"]["write_access"] == "none"
     assert body["capabilities"]["entries"]["project_registry"]["project_count"] >= 6
     assert body["manual_ops"]["catalog"]["mode"] == "manual_only"
     assert body["disabled"]["runner"]["enabled"] is False
