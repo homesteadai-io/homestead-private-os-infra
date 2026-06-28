@@ -334,9 +334,25 @@ From Adam's laptop while signed into the same tailnet, Tailscale `:8088` should 
 curl.exe --max-time 10 http://<tailscale-ip>:8088/health
 curl.exe --max-time 10 http://<tailscale-ip>:8088/api/repo/status
 curl.exe --max-time 10 http://<tailscale-ip>:8088/mcp/tools
-curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/search -H "Content-Type: application/json" -d "{\"query\":\"Homestead\",\"max_results\":5}"
-curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/context-pack -H "Content-Type: application/json" -d "{\"task\":\"Homestead second-brain OKF library\",\"max_files\":5}"
-curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" -d "{\"tool\":\"homestead.repo_status\",\"arguments\":{}}"
+```
+
+For POST requests from Windows PowerShell, prefer a temp JSON file so native argument parsing cannot strip quotes:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"query":"Homestead","max_results":5}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/search -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"task":"Homestead second-brain OKF library","max_files":5}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/context-pack -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.repo_status","arguments":{}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
 ```
 
 If the Tailscale commands time out and `Test-NetConnection <tailscale-ip> -Port 8088` shows the Wi-Fi interface instead of a Tailscale interface, the laptop is not connected to the Tailnet yet. Fix the client before changing server exposure.

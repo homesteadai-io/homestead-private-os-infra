@@ -126,11 +126,7 @@ Verified:
 - `GET /mcp/tools` returned 5 tools
 - `POST /mcp/call` with `homestead.repo_status` returned branch `main`
 - Public `5.78.206.130:8088` remained closed
-
-Not yet passed from Adam's laptop:
-
-- Direct laptop curl to `http://100.112.20.36:8088/...`
-- Local probe showed the Windows client was not on Tailscale/path; it attempted Wi-Fi source `10.0.0.184`
+- Laptop Tailscale acceptance passed against `http://100.112.20.36:8088`
 
 Receipt proof:
 
@@ -139,6 +135,8 @@ Receipt proof:
 /opt/homestead/data/receipts/2026-06-27/hetzner-live-20260627T224952Z.json
 /opt/homestead/data/receipts/2026-06-27/hetzner-tailscale-acceptance-20260627T232456Z.md
 /opt/homestead/data/receipts/2026-06-27/hetzner-tailscale-acceptance-20260627T232456Z.json
+/opt/homestead/data/receipts/2026-06-28/run-7c3a87ff4e25.md
+/opt/homestead/data/receipts/2026-06-28/run-7c3a87ff4e25.json
 ```
 
 Laptop SSH tunnel proof also passed:
@@ -201,14 +199,6 @@ curl http://127.0.0.1:18088/mcp/tools
 
 ## Next Best Move
 
-Install or sign into Tailscale on Adam's laptop, then rerun the laptop acceptance checks without SSH tunnel:
-
-```powershell
-curl http://100.112.20.36:8088/health
-curl http://100.112.20.36:8088/api/repo/status
-curl http://100.112.20.36:8088/mcp/tools
-```
-
 Restart policy is now active on all five Compose services:
 
 ```text
@@ -219,7 +209,7 @@ receipt-worker: unless-stopped
 caddy: unless-stopped
 ```
 
-Do not merge/tag until laptop Tailscale acceptance passes. Reboot survival proof is also recommended before tagging if Adam is ready for brief downtime.
+The remaining optional hardening proof is reboot survival. Run it only when Adam is ready for brief downtime.
 
 ## Not Yet Added
 

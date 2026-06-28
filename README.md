@@ -13,6 +13,20 @@ Boring spine first. This repo holds the first deployable foundation for Adam's H
 
 No GPU provider, no LiteLLM, no Langfuse, no email alerts, no agent swarm in v0.
 
+## Hetzner v0 Deployment Verified
+
+Hetzner v0 is live as a private foundation node:
+
+- Server: `5.78.206.130`
+- Tailscale host: `homestead-cpx51`
+- Private URL: `http://100.112.20.36:8088`
+- Existing Nginx still owns public `80/443`
+- Homestead Caddy is private on Tailscale `8088/8443`
+- Docker data-root lives on the mounted Hetzner volume
+- All five Compose services use `restart: unless-stopped`
+
+OpenRouter, LiteLLM, GPU, Langfuse, SMTP, vector search, and runner behavior are intentionally not part of this merge.
+
 ## Quick Start
 
 ```bash
