@@ -123,7 +123,7 @@ concept-system-receipts-homestead-health-homestead-latest-7d8b5c17
 PASS reply:
 
 ```text
-Output capsules preserve useful work and continuation context as durable bundles under /System Outputs/{project_id}/{YYYY-MM-DD}-{slug}/. Receipts remain separate proof of system behavior. It cites concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-2026062-c40f3eb1.
+Output capsules preserve useful work and continuation context as durable bundles under /System Outputs/{project_id}/{YYYY-MM-DD}-{slug}/. Receipts remain separate proof of system behavior. It cites concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-20260628-222457-index-c40f3eb1.
 ```
 
 FAIL reply:
@@ -135,7 +135,7 @@ It says capsules live in /System Receipts, treats receipts as capsules, or canno
 Expected concept ID:
 
 ```text
-concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-2026062-c40f3eb1
+concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-20260628-222457-index-c40f3eb1
 ```
 
 ### 4. What is the Creative Coatings powder scheduler, and what problem does it solve?
