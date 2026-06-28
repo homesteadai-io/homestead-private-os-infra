@@ -25,6 +25,8 @@ def clear_langfuse_env(monkeypatch):
         "LANGFUSE_SECRET_KEY",
         "LANGFUSE_ENVIRONMENT",
         "LANGFUSE_RELEASE",
+        "MODEL_ROUTE_RECEIPTS_ENABLED",
+        "MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -192,7 +194,11 @@ def test_model_route_tracing_enabled_posts_langfuse_without_prompt(monkeypatch):
                         "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
                     },
                 )
-            return httpx.Response(207, json={"successes": [{"id": "trace"}], "errors": []})
+            return httpx.Response(
+                207,
+                json={"successes": [{"id": "trace"}], "errors": []},
+                request=httpx.Request("POST", url),
+            )
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -275,6 +281,200 @@ def test_model_route_tracing_failure_is_fail_open(monkeypatch):
         "https://openrouter.ai/api/v1/chat/completions",
         "http://100.112.20.36:3000/api/public/ingestion",
     ]
+
+
+def test_model_route_receipts_disabled_does_not_write(monkeypatch, tmp_path):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, auth=None):
+            return httpx.Response(
+                200,
+                json={
+                    "model": "openai/gpt-4.1-mini",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("MODEL_ROUTE_RECEIPTS_ENABLED", "false")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "secret prompt"})
+
+    assert response.status_code == 200
+    assert "receipt_id" not in response.json()
+    assert not receipts.exists()
+
+
+def test_model_route_receipts_enabled_writes_metadata_without_prompt(monkeypatch, tmp_path):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, auth=None):
+            if url.endswith("/chat/completions"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "openai/gpt-4.1-mini",
+                        "choices": [{"message": {"content": "receipt ok"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+                    },
+                )
+            return httpx.Response(
+                207,
+                json={"successes": [{"id": "trace"}], "errors": []},
+                request=httpx.Request("POST", url),
+            )
+
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://100.112.20.36:3000")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("MODEL_ROUTE_RECEIPTS_ENABLED", "true")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        "/model/route",
+        json={"prompt": "do not put this prompt in the receipt", "max_tokens": 80},
+        headers={"x-homestead-surface": "pytest-receipts"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["receipt_id"].startswith("model-route-")
+    receipt_path = Path(body["receipt_path"])
+    json_path = receipt_path.with_suffix(".json")
+    assert receipt_path.exists()
+    assert json_path.exists()
+
+    receipt_text = receipt_path.read_text(encoding="utf-8")
+    receipt_json = json.loads(json_path.read_text(encoding="utf-8"))
+    metadata = receipt_json["metadata"]
+    assert receipt_json["task"] == "model_route"
+    assert receipt_json["requesting_agent"] == "pytest-receipts"
+    assert receipt_json["files_read"] == []
+    assert receipt_json["files_changed"] == []
+    assert receipt_json["review_required"] is False
+    assert receipt_json["verdict"] == "ok"
+    assert metadata["route"] == "/model/route"
+    assert metadata["requested_model"] == "openai/gpt-4.1-mini"
+    assert metadata["model_used"] == "openai/gpt-4.1-mini"
+    assert isinstance(metadata["latency_ms"], int)
+    assert metadata["ok"] is True
+    assert metadata["usage"]["total_tokens"] == 7
+    assert metadata["langfuse_trace_id"]
+    assert "do not put this prompt" not in receipt_text
+    assert "receipt ok" not in receipt_text
+    assert "do not put this prompt" not in json.dumps(receipt_json)
+    assert "receipt ok" not in json.dumps(receipt_json)
+
+
+def test_model_route_receipt_writer_failure_is_fail_open(monkeypatch):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, auth=None):
+            return httpx.Response(
+                200,
+                json={
+                    "model": "openai/gpt-4.1-mini",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+    def fail_write(payload):
+        raise OSError("disk path leaked? no")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("MODEL_ROUTE_RECEIPTS_ENABLED", "true")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(main, "write_model_route_receipt", fail_write)
+
+    response = client.post("/model/route", json={"prompt": "hello"})
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "ok"
+    assert response.json()["receipt_error"] == "receipt write failed"
+    assert "disk path" not in response.text
+
+
+def test_model_route_openrouter_failure_writes_safe_receipt(monkeypatch, tmp_path):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, auth=None):
+            return httpx.Response(500, json={"error": {"message": "provider failed"}})
+
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("MODEL_ROUTE_RECEIPTS_ENABLED", "true")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "do not leak failure prompt"})
+
+    assert response.status_code == 502
+    paths = list(receipts.rglob("model-route-*.json"))
+    assert len(paths) == 1
+    receipt_json = json.loads(paths[0].read_text(encoding="utf-8"))
+    receipt_text = paths[0].with_suffix(".md").read_text(encoding="utf-8")
+    assert receipt_json["verdict"] == "error"
+    assert receipt_json["review_required"] is True
+    assert receipt_json["metadata"]["ok"] is False
+    assert receipt_json["metadata"]["error_summary"] == "provider failed"
+    combined = json.dumps(receipt_json) + receipt_text + response.text
+    assert "super-secret-openrouter" not in combined
+    assert "do not leak failure prompt" not in combined
 
 
 def test_model_route_errors_do_not_leak_secrets_or_prompt(monkeypatch):

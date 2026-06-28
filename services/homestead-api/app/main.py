@@ -140,6 +140,7 @@ class ReceiptRequest(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
     review_required: bool = False
     verdict: str = "recorded"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelRouteRequest(BaseModel):
@@ -329,10 +330,10 @@ async def send_langfuse_model_route_trace(
     requesting_surface: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
-) -> None:
+) -> str | None:
     config = langfuse_config()
     if not config:
-        return
+        return None
 
     trace_id = uuid4().hex
     generation_id = uuid4().hex
@@ -400,7 +401,104 @@ async def send_langfuse_model_route_trace(
             )
             response.raise_for_status()
     except Exception:
-        return
+        return None
+
+    return trace_id
+
+
+def model_route_receipts_enabled() -> bool:
+    return env_flag("MODEL_ROUTE_RECEIPTS_ENABLED")
+
+
+def model_route_receipts_include_content() -> bool:
+    return env_flag("MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT")
+
+
+def model_route_run_id() -> str:
+    return f"model-route-{uuid4().hex[:12]}"
+
+
+def receipt_usage(usage: Any) -> Any:
+    if not isinstance(usage, dict):
+        return usage
+    return json.loads(json.dumps(usage))
+
+
+def model_route_receipt_payload(
+    *,
+    requesting_agent: str,
+    requested_model: str,
+    model_used: str | None,
+    latency_ms: int,
+    ok: bool,
+    usage: Any = None,
+    langfuse_trace_id: str | None = None,
+    error_summary: str | None = None,
+    prompt: str | None = None,
+    content: str | None = None,
+    system: str | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "route": "/model/route",
+        "requested_model": requested_model,
+        "model_used": model_used,
+        "latency_ms": latency_ms,
+        "ok": ok,
+    }
+    if error_summary:
+        metadata["error_summary"] = error_summary
+    if usage is not None:
+        metadata["usage"] = receipt_usage(usage)
+    if langfuse_trace_id:
+        metadata["langfuse_trace_id"] = langfuse_trace_id
+
+    if model_route_receipts_include_content():
+        metadata["content_capture"] = {
+            "prompt": prompt,
+            "system": system,
+            "response": content,
+        }
+
+    actions_taken = [
+        "called /model/route using direct OpenRouter routing",
+        "recorded model route metadata; prompt/content omitted by default",
+    ]
+    if langfuse_trace_id:
+        actions_taken.append("linked Langfuse trace metadata")
+
+    return {
+        "run_id": model_route_run_id(),
+        "timestamp": utc_now(),
+        "requesting_agent": requesting_agent or "unknown",
+        "task": "model_route",
+        "files_read": [],
+        "model_used": model_used or requested_model,
+        "actions_taken": actions_taken,
+        "files_changed": [],
+        "review_required": not ok,
+        "verdict": "ok" if ok else "error",
+        "metadata": metadata,
+    }
+
+
+def write_model_route_receipt(payload: dict[str, Any]) -> dict[str, Any]:
+    return write_receipt_payload(payload)
+
+
+def safe_receipt_result(result: dict[str, Any]) -> dict[str, str]:
+    return {
+        "receipt_id": result["run_id"],
+        "receipt_path": result["markdown_path"],
+    }
+
+
+async def record_model_route_receipt(payload: dict[str, Any]) -> dict[str, str] | None:
+    if not model_route_receipts_enabled():
+        return None
+    try:
+        return safe_receipt_result(write_model_route_receipt(payload))
+    except Exception:
+        return {"receipt_error": "receipt write failed"}
 
 
 def requesting_surface(request: Request) -> str | None:
@@ -435,27 +533,57 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(url, headers=headers, json=payload)
     except httpx.TimeoutException as exc:
-        await send_langfuse_model_route_trace(
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        surface = requesting_surface(http_request)
+        trace_id = await send_langfuse_model_route_trace(
             requested_model=model,
             model_used=None,
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=latency_ms,
             ok=False,
             error="OpenRouter request timed out",
-            requesting_surface=requesting_surface(http_request),
+            requesting_surface=surface,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
         )
+        await record_model_route_receipt(
+            model_route_receipt_payload(
+                requesting_agent=surface or "unknown",
+                requested_model=model,
+                model_used=None,
+                latency_ms=latency_ms,
+                ok=False,
+                error_summary="OpenRouter request timed out",
+                langfuse_trace_id=trace_id,
+                prompt=request.prompt,
+                system=request.system,
+            )
+        )
         raise HTTPException(status_code=504, detail="OpenRouter request timed out") from exc
     except httpx.RequestError as exc:
-        await send_langfuse_model_route_trace(
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        surface = requesting_surface(http_request)
+        trace_id = await send_langfuse_model_route_trace(
             requested_model=model,
             model_used=None,
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=latency_ms,
             ok=False,
             error="OpenRouter request failed",
-            requesting_surface=requesting_surface(http_request),
+            requesting_surface=surface,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
+        )
+        await record_model_route_receipt(
+            model_route_receipt_payload(
+                requesting_agent=surface or "unknown",
+                requested_model=model,
+                model_used=None,
+                latency_ms=latency_ms,
+                ok=False,
+                error_summary="OpenRouter request failed",
+                langfuse_trace_id=trace_id,
+                prompt=request.prompt,
+                system=request.system,
+            )
         )
         raise HTTPException(status_code=502, detail="OpenRouter request failed") from exc
 
@@ -469,15 +597,30 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
                     message = error["message"]
         except ValueError:
             pass
-        await send_langfuse_model_route_trace(
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        surface = requesting_surface(http_request)
+        trace_id = await send_langfuse_model_route_trace(
             requested_model=model,
             model_used=None,
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=latency_ms,
             ok=False,
             error=message,
-            requesting_surface=requesting_surface(http_request),
+            requesting_surface=surface,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
+        )
+        await record_model_route_receipt(
+            model_route_receipt_payload(
+                requesting_agent=surface or "unknown",
+                requested_model=model,
+                model_used=None,
+                latency_ms=latency_ms,
+                ok=False,
+                error_summary=message,
+                langfuse_trace_id=trace_id,
+                prompt=request.prompt,
+                system=request.system,
+            )
         )
         raise HTTPException(status_code=502, detail={"error": message, "upstream_status": response.status_code})
 
@@ -498,23 +641,42 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
         raise HTTPException(status_code=502, detail="OpenRouter returned no assistant content")
 
     model_used = data.get("model") or model
-    await send_langfuse_model_route_trace(
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    surface = requesting_surface(http_request)
+    trace_id = await send_langfuse_model_route_trace(
         requested_model=model,
         model_used=model_used,
-        latency_ms=int((time.perf_counter() - started) * 1000),
+        latency_ms=latency_ms,
         ok=True,
         usage=data.get("usage"),
-        requesting_surface=requesting_surface(http_request),
+        requesting_surface=surface,
         max_tokens=request.max_tokens,
         temperature=request.temperature,
     )
 
-    return {
+    result = {
         "model": model_used,
         "content": content,
         "finish_reason": first.get("finish_reason"),
         "usage": data.get("usage"),
     }
+    receipt_result = await record_model_route_receipt(
+        model_route_receipt_payload(
+            requesting_agent=surface or "unknown",
+            requested_model=model,
+            model_used=model_used,
+            latency_ms=latency_ms,
+            ok=True,
+            usage=data.get("usage"),
+            langfuse_trace_id=trace_id,
+            prompt=request.prompt,
+            content=content,
+            system=request.system,
+        )
+    )
+    if receipt_result:
+        result.update(receipt_result)
+    return result
 
 
 @app.post("/read-concept")
@@ -534,8 +696,12 @@ def read_concept(request: ReadConceptRequest) -> dict[str, Any]:
 
 @app.post("/receipt/create")
 def create_receipt(request: ReceiptRequest) -> dict[str, Any]:
-    run_id = clean_run_id(request.run_id)
-    timestamp = request.timestamp or utc_now()
+    return write_receipt_payload(request.model_dump())
+
+
+def write_receipt_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = clean_run_id(payload.get("run_id"))
+    timestamp = payload.get("timestamp") or utc_now()
     try:
         date_part = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date().isoformat()
     except ValueError as exc:
@@ -549,7 +715,6 @@ def create_receipt(request: ReceiptRequest) -> dict[str, Any]:
     if md_path.exists() or json_path.exists():
         raise HTTPException(status_code=409, detail=f"receipt already exists: {run_id}")
 
-    payload = request.model_dump()
     payload["run_id"] = run_id
     payload["timestamp"] = timestamp
 
@@ -567,6 +732,17 @@ def create_receipt(request: ReceiptRequest) -> dict[str, Any]:
 def receipt_markdown(payload: dict[str, Any]) -> str:
     def lines(items: list[str]) -> str:
         return "\n".join(f"- {item}" for item in items) if items else "- none"
+
+    metadata = payload.get("metadata") or {}
+    metadata_section = ""
+    if metadata:
+        metadata_section = f"""
+## Metadata
+
+```json
+{json.dumps(metadata, indent=2, sort_keys=True)}
+```
+"""
 
     return f"""# Homestead Receipt: {payload["run_id"]}
 
@@ -591,4 +767,4 @@ def receipt_markdown(payload: dict[str, Any]) -> str:
 ## Files Changed
 
 {lines(payload["files_changed"])}
-"""
+{metadata_section}"""

@@ -408,7 +408,83 @@ no secret values in response body
 
 Restore the real private Langfuse host afterward and redeploy if tracing should remain enabled.
 
-## 13. Private Exposure Check
+## 13. Optional Model Route Receipts
+
+Model route receipts are optional, append-only, metadata-only by default, and fail-open.
+
+Verify variable names without printing values:
+
+```bash
+grep -E '^(MODEL_ROUTE_RECEIPTS_ENABLED|MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
+With receipts disabled:
+
+```bash
+cd /opt/homestead/runtime
+MODEL_ROUTE_RECEIPTS_ENABLED=false ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+Then from Adam's laptop:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"prompt":"Say hello from Homestead with model-route receipts disabled.","max_tokens":80}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/model/route -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+200 response
+no receipt_id in response
+```
+
+With receipts enabled:
+
+```bash
+cd /opt/homestead/runtime
+MODEL_ROUTE_RECEIPTS_ENABLED=true MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT=false ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+Then from Adam's laptop:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"prompt":"Say hello from Homestead with model-route receipt metadata enabled.","max_tokens":80}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/model/route -H "Content-Type: application/json" -H "x-homestead-surface: laptop-receipt-acceptance" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+200 response
+receipt_id and receipt_path present
+receipt Markdown and JSON exist under /opt/homestead/data/receipts/YYYY-MM-DD/
+receipt metadata includes route=/model/route, requested_model, model_used, latency_ms, ok=true, token usage when returned, and langfuse_trace_id when tracing succeeds
+receipt does not include full prompt or assistant content by default
+```
+
+Fail-open check:
+
+```bash
+cd /opt/homestead/runtime
+MODEL_ROUTE_RECEIPTS_ENABLED=true RECEIPTS_DIR=/not/a/writable/path ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+Then call `/model/route` again. Expected:
+
+```text
+200 response from /model/route
+safe receipt_error may be present
+no secret values or stack traces in response body
+```
+
+Restore the real `RECEIPTS_DIR` and desired receipt setting afterward, then redeploy.
+
+## 14. Private Exposure Check
 
 From Adam's laptop, public `:8088` should fail:
 
@@ -474,7 +550,7 @@ private Langfuse health succeeds
 LiteLLM over Tailscale fails
 ```
 
-## 14. Reboot Survival
+## 15. Reboot Survival
 
 Run only when brief server downtime is acceptable:
 

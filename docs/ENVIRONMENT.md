@@ -76,6 +76,17 @@ Keep real keys only in local/server env files. Commit placeholders only.
 
 Trace metadata includes route, requested model, model used, latency, ok/error, token usage when returned, and requesting surface when available. Prompt and response content are not sent by default.
 
+## Optional Model Route Receipts
+
+These optionally write append-only receipt metadata for `/model/route` calls using the existing receipt path. Receipts are disabled by default and must fail open: if receipt writing fails, `/model/route` should still return the OpenRouter response.
+
+| Variable | Purpose |
+|---|---|
+| `MODEL_ROUTE_RECEIPTS_ENABLED` | set to `true` to write model-route metadata receipts; default `false` |
+| `MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT` | set to `true` only after an explicit content-capture decision; default `false` |
+
+Default receipts include run id, timestamp, requesting surface, route, requested model, model used, latency, ok/error, token usage when returned, Langfuse trace id when available, review flag, and verdict. Prompt and response content are not written by default.
+
 ## Future Placeholders
 
 Present for planning, not used by v0:
