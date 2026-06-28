@@ -3,7 +3,6 @@
 This runbook deploys Homestead Private OS Infra v0 to the Hetzner CPX51 node.
 
 v0 is deployment-only:
-- no OpenRouter routing yet
 - no LiteLLM
 - no GPU provider
 - no Langfuse
@@ -173,7 +172,13 @@ CADDY_HTTP_BIND=0.0.0.0
 CADDY_HTTPS_BIND=0.0.0.0
 ```
 
-Leave model, Langfuse, and SMTP values as placeholders in v0.
+Set OpenRouter values only in local/server env files. Leave Langfuse and SMTP values as placeholders in v0.
+
+Verify OpenRouter variable names without printing secret values:
+
+```bash
+grep -E '^(OPENROUTER_API_KEY|OPENROUTER_BASE_URL|OPENROUTER_DEFAULT_MODEL|OPENROUTER_HTTP_REFERER|OPENROUTER_APP_TITLE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
 
 ## Preflight
 

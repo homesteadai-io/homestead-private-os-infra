@@ -5,8 +5,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
+import app.main as main
 from app.main import app
 
 
@@ -81,3 +83,144 @@ def test_receipt_create_is_append_only(monkeypatch, tmp_path):
     duplicate = client.post("/receipt/create", json=payload)
     assert duplicate.status_code == 409
 
+
+def test_model_route_requires_openrouter_config(monkeypatch):
+    for name in [
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_BASE_URL",
+        "OPENROUTER_DEFAULT_MODEL",
+        "OPENROUTER_HTTP_REFERER",
+        "OPENROUTER_APP_TITLE",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+
+    response = client.post("/model/route", json={"prompt": "hello"})
+
+    assert response.status_code == 503
+    assert "OPENROUTER_API_KEY" in response.json()["detail"]["missing"]
+
+
+def test_model_route_calls_openrouter_with_expected_headers(monkeypatch):
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={
+                    "model": "openai/gpt-4.1-mini",
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "Hello from Homestead."},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 4, "total_tokens": 8},
+                },
+            )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        "/model/route",
+        json={"prompt": "Say hello.", "max_tokens": 80, "temperature": 0.1},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "Hello from Homestead."
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["headers"]["HTTP-Referer"] == "https://homesteadai.io"
+    assert captured["headers"]["X-OpenRouter-Title"] == "Homestead Private OS"
+    assert captured["json"]["model"] == "openai/gpt-4.1-mini"
+    assert captured["json"]["messages"] == [{"role": "user", "content": "Say hello."}]
+    assert captured["json"]["max_tokens"] == 80
+
+
+def test_model_route_does_not_double_prefix_bearer(monkeypatch):
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["headers"] = headers
+            return httpx.Response(
+                200,
+                json={
+                    "model": "openai/gpt-4.1-mini",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "Bearer test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "hello"})
+
+    assert response.status_code == 200
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_model_route_normalizes_header_like_api_key(monkeypatch):
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["headers"] = headers
+            return httpx.Response(
+                200,
+                json={
+                    "model": "openai/gpt-4.1-mini",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "Authorization: Bearer test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "hello"})
+
+    assert response.status_code == 200
+    assert captured["headers"]["Authorization"] == "Bearer test-key"

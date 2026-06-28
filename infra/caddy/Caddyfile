@@ -26,6 +26,10 @@ node.homesteadai.io {
 		reverse_proxy homestead-api:8000
 	}
 
+	handle /model/* {
+		reverse_proxy homestead-api:8000
+	}
+
 	handle_path /mcp/* {
 		reverse_proxy homestead-mcp:8010
 	}
@@ -39,6 +43,10 @@ http://localhost, http://:80 {
 	}
 
 	handle_path /api/* {
+		reverse_proxy homestead-api:8000
+	}
+
+	handle /model/* {
 		reverse_proxy homestead-api:8000
 	}
 

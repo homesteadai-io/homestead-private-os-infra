@@ -215,7 +215,6 @@ The remaining optional hardening proof is reboot survival. Run it only when Adam
 
 Do not assume these exist:
 
-- OpenRouter `/model/route`
 - LiteLLM
 - GPU provider
 - Langfuse tracing
@@ -223,4 +222,41 @@ Do not assume these exist:
 - vector search
 - autonomous runner
 
-Task 3 is OpenRouter routing after this deployment foundation.
+OpenRouter `/model/route` is Task 3 and should remain private behind Tailscale.
+
+## OpenRouter Route Proof
+
+Task 3 was deployed on branch `codex/openrouter-model-route` for live verification.
+
+Safe env-name verification passed without printing values:
+
+```text
+OPENROUTER_API_KEY=<set>
+OPENROUTER_BASE_URL=<set>
+OPENROUTER_DEFAULT_MODEL=<set>
+OPENROUTER_HTTP_REFERER=<set>
+OPENROUTER_APP_TITLE=<set>
+```
+
+Live Tailscale test:
+
+```powershell
+curl.exe -X POST http://100.112.20.36:8088/model/route `
+  -H "Content-Type: application/json" `
+  --data-binary "@<temp-json-file>"
+```
+
+Result:
+
+```text
+HTTP 200
+model: openai/gpt-4.1-mini-2025-04-14
+content: Hello from Homestead!
+```
+
+Attribution headers used by the API:
+
+```text
+HTTP-Referer: OPENROUTER_HTTP_REFERER
+X-OpenRouter-Title: OPENROUTER_APP_TITLE
+```

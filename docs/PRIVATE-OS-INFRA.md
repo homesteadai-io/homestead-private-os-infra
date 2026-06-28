@@ -17,7 +17,7 @@ Included:
 - Markdown file search
 - context pack builder
 - Markdown and JSON receipts
-- OpenRouter environment placeholders
+- OpenRouter `/model/route`
 
 Excluded:
 - GPU provider support
@@ -68,6 +68,7 @@ Runtime env lives at:
 | `POST` | `/context-pack` | relevant markdown paths and snippets |
 | `POST` | `/read-concept` | read one markdown file for MCP |
 | `POST` | `/receipt/create` | write Markdown and JSON receipts |
+| `POST` | `/model/route` | route one prompt through OpenRouter |
 
 ## MCP Tools
 

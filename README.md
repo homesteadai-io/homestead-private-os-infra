@@ -9,7 +9,7 @@ Boring spine first. This repo holds the first deployable foundation for Adam's H
 - Git-backed repo status/sync
 - Markdown search/context packs over Adam's second-brain OKF library/context graph
 - Markdown and JSON receipts
-- OpenRouter env stub only
+- OpenRouter `/model/route`
 
 No GPU provider, no LiteLLM, no Langfuse, no email alerts, no agent swarm in v0.
 
@@ -25,7 +25,7 @@ Hetzner v0 is live as a private foundation node:
 - Docker data-root lives on the mounted Hetzner volume
 - All five Compose services use `restart: unless-stopped`
 
-OpenRouter, LiteLLM, GPU, Langfuse, SMTP, vector search, and runner behavior are intentionally not part of this merge.
+LiteLLM, GPU, Langfuse, SMTP, vector search, and runner behavior are intentionally not part of this foundation.
 
 ## Quick Start
 
