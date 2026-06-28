@@ -17,6 +17,7 @@ Never commit real env files.
 | `HOMESTEAD_ENV` | environment label, usually `local` or `production` |
 | `HOMESTEAD_REPO_PATH` | container path to the repo API inspects |
 | `RECEIPTS_DIR` | container path where receipts are written |
+| `KEEP_HEALTH_DIR` | repo-relative Keep folder for Homestead health summaries |
 | `KEEP_REPO_HOST_PATH` | host path mounted to `HOMESTEAD_REPO_PATH` |
 | `HOMESTEAD_DATA_PATH` | host path mounted to `/data` |
 | `HOMESTEAD_ENV_FILE` | env file path used by Docker Compose service `env_file` |
@@ -32,6 +33,7 @@ Never commit real env files.
 HOMESTEAD_ENV=production
 HOMESTEAD_REPO_PATH=/workspace/keep
 RECEIPTS_DIR=/data/receipts
+KEEP_HEALTH_DIR=System Receipts/Homestead Health
 KEEP_REPO_HOST_PATH=/opt/homestead/the-keep
 HOMESTEAD_DATA_PATH=/opt/homestead/data
 HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env
@@ -118,6 +120,27 @@ These optionally write append-only receipt metadata for `/model/route` calls usi
 | `MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT` | set to `true` only after an explicit content-capture decision; default `false` |
 
 Default receipts include run id, timestamp, requesting surface, route, requested model, model used, latency, ok/error, token usage when returned, Langfuse trace id when available, review flag, and verdict. Prompt and response content are not written by default.
+
+## Cloud OS Status And Keep Health
+
+Homestead exposes a cloud-first status surface:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /node/status` | current node health, git, gateway, Langfuse, receipts, exposure assumptions, and capabilities |
+| `GET /os/status` | cloud OS status alias for node status |
+| `GET /os/context` | cloud-first OS context, MCP tools, Keep health folder, and local-mode readiness |
+| `POST /keep/health/sync` | explicit metadata-only health summary sync into The Keep |
+
+`KEEP_HEALTH_DIR` is repo-relative under `HOMESTEAD_REPO_PATH`.
+
+Default:
+
+```text
+KEEP_HEALTH_DIR=System Receipts/Homestead Health
+```
+
+The sync writes operational summaries only. It omits prompts, completions, headers, API keys, and raw env values. Local mode is represented as disabled until Adam explicitly chooses that release path.
 
 ## Future Placeholders
 

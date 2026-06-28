@@ -137,6 +137,7 @@ Use these v0 values:
 HOMESTEAD_ENV=production
 HOMESTEAD_REPO_PATH=/workspace/keep
 RECEIPTS_DIR=/data/receipts
+KEEP_HEALTH_DIR=System Receipts/Homestead Health
 KEEP_REPO_HOST_PATH=/opt/homestead/the-keep
 HOMESTEAD_DATA_PATH=/opt/homestead/data
 HOMESTEAD_ENV_FILE=/opt/homestead/secrets/runtime.env
@@ -251,6 +252,20 @@ Verify receipt variable names without printing values:
 grep -E '^(MODEL_ROUTE_RECEIPTS_ENABLED|MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
 ```
 
+Cloud OS status and Keep health summaries:
+
+```bash
+KEEP_HEALTH_DIR=System Receipts/Homestead Health
+```
+
+`KEEP_HEALTH_DIR` is repo-relative under `/workspace/keep`. Health sync is explicit only; no background writer is added.
+
+Verify without printing unrelated env:
+
+```bash
+grep -E '^(KEEP_HEALTH_DIR)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
 ## Preflight
 
 ```bash
@@ -347,6 +362,47 @@ homestead.list_recent_receipts
 homestead.read_receipt
 homestead.receipt_stats
 ```
+
+## Cloud OS Status And Keep Health
+
+Private status endpoints:
+
+```powershell
+curl http://<tailscale-ip>:8088/api/node/status
+curl http://<tailscale-ip>:8088/api/os/status
+curl http://<tailscale-ip>:8088/api/os/context
+```
+
+MCP tools:
+
+```text
+homestead.node_status
+homestead.os_status
+homestead.os_context
+homestead.sync_keep_health
+```
+
+Write a metadata-only health summary into The Keep:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"requesting_agent":"runbook-health-sync","note":"manual health sync"}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/keep/health/sync -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected Keep files under `KEEP_HEALTH_DIR`:
+
+```text
+index.md
+homestead-latest.md
+homestead-health-log.md
+daily/YYYY-MM-DD.md
+gateway/gateway-health.md
+snapshots/<timestamp>.md
+```
+
+These summaries omit prompt/content and secret values. Local mode should remain visible but disabled.
 
 ## Always-On Runtime Check
 
