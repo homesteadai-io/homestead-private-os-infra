@@ -38,6 +38,9 @@ def test_tools_surface_lists_required_homestead_tools():
     assert "homestead.session_end" in names
     assert "homestead.sessions" in names
     assert "homestead.session_read" in names
+    assert "homestead.outputs_write" in names
+    assert "homestead.outputs_list" in names
+    assert "homestead.outputs_read" in names
     assert "homestead.ops_policy" in names
     assert "homestead.check_ops_policy" in names
     assert "homestead.list_manual_ops" in names
@@ -279,3 +282,45 @@ def test_command_session_tools_reject_bad_ids():
     assert missing_session.json()["detail"] == "session_id is required"
     assert bad_session.status_code == 400
     assert bad_session.json()["detail"] == "session_id contains unsupported characters"
+
+
+def test_output_tools_dispatch_to_api(monkeypatch):
+    calls = []
+
+    async def fake_api_request(method, path, json_body=None):
+        calls.append((method, path, json_body))
+        return {"ok": True, "path": path}
+
+    monkeypatch.setattr(main, "api_request", fake_api_request)
+
+    write = client.post(
+        "/call",
+        json={"tool": "homestead.outputs_write", "arguments": {"title": "Output", "summary": "Useful work"}},
+    )
+    list_outputs = client.post("/call", json={"tool": "homestead.outputs_list", "arguments": {}})
+    read = client.post(
+        "/call",
+        json={"tool": "homestead.outputs_read", "arguments": {"output_id": "homestead-private-os--2026-06-28-output"}},
+    )
+
+    assert write.status_code == 200
+    assert list_outputs.status_code == 200
+    assert read.status_code == 200
+    assert calls == [
+        ("POST", "/outputs", {"title": "Output", "summary": "Useful work"}),
+        ("GET", "/outputs", None),
+        ("GET", "/outputs/homestead-private-os--2026-06-28-output", None),
+    ]
+
+
+def test_output_read_rejects_bad_output_id():
+    missing = client.post("/call", json={"tool": "homestead.outputs_read", "arguments": {}})
+    bad = client.post(
+        "/call",
+        json={"tool": "homestead.outputs_read", "arguments": {"output_id": "bad/output"}},
+    )
+
+    assert missing.status_code == 400
+    assert missing.json()["detail"] == "output_id is required"
+    assert bad.status_code == 400
+    assert bad.json()["detail"] == "output_id contains unsupported characters"

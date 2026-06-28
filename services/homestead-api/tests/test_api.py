@@ -629,6 +629,217 @@ def test_command_sessions_lifecycle_is_policy_gated_and_manual(monkeypatch, tmp_
     assert POLICY_TOKEN not in combined
 
 
+def test_output_capsule_write_list_read_and_policy(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    headers = trusted_codex_headers(monkeypatch)
+
+    assert Path("docs/OUTPUT-CAPSULE-WRITE-POLICY.md").exists()
+    assert Path("docs/HANDOFF-OUTPUT-CAPSULES.md").exists()
+
+    denied = client.post(
+        "/outputs",
+        headers={"x-homestead-surface": "codex"},
+        json={"title": "Denied output", "summary": "Should not write", "created_by": "spoofed-codex"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["operation_type"] == "output"
+    assert denied.json()["detail"]["operation"] == "write"
+    assert not (tmp_path / "System Outputs").exists()
+    assert len(list(receipts.rglob("ops-policy-output-write-*.json"))) == 1
+
+    command = client.post(
+        "/commands",
+        headers=headers,
+        json={"title": "Output capsule command", "created_by": "codex", "project_id": "homestead-private-os"},
+    ).json()["command"]
+    session = client.post(
+        "/agent/sessions/start",
+        headers=headers,
+        json={"agent": "codex", "command_id": command["command_id"], "project_id": "homestead-private-os"},
+    ).json()["session"]
+
+    created = client.post(
+        "/outputs",
+        headers=headers,
+        json={
+            "title": "Agent Boot Projects",
+            "summary": "Durable handoff for the agent boot project registry release.",
+            "project_id": "homestead-private-os",
+            "slug": "agent-boot-projects",
+            "command_id": command["command_id"],
+            "session_id": session["session_id"],
+            "created_by": "codex",
+            "handoff": "Read the boot and project registry contract first.",
+            "capsule": "The output capsule preserves continuation context only.",
+            "next_ai_prompt": "Continue from this capsule without inventing autonomy.",
+            "okf": {"status": "placeholder"},
+            "pam": {"status": "placeholder"},
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    output_id = body["output_id"]
+    assert output_id.startswith("homestead-private-os--")
+    summary = body["summary"]
+    assert summary["project_id"] == "homestead-private-os"
+    assert summary["command_id"] == command["command_id"]
+    assert summary["session_id"] == session["session_id"]
+    assert summary["relative_path"].startswith("/System Outputs/homestead-private-os/")
+    assert "/System Receipts" not in summary["relative_path"]
+    assert "bundle_path" not in summary
+    assert body["capsule"]["policy"]["surface"] == "codex"
+    assert body["capsule"]["content_policy"]["prompt_capture_default"] is False
+    assert body["capsule"]["content_policy"]["completion_capture_default"] is False
+
+    bundle_dir = tmp_path / summary["relative_path"].lstrip("/")
+    expected = {"index.md", "HANDOFF.md", "handoff.json", "CAPSULE.md", "capsule.json", "next-ai-prompt.md", "okf", "pam"}
+    assert expected.issubset({path.name for path in bundle_dir.iterdir()})
+    assert (bundle_dir / "okf" / "README.md").exists()
+    assert (bundle_dir / "pam" / "README.md").exists()
+    index_text = (bundle_dir / "index.md").read_text(encoding="utf-8")
+    assert "[HANDOFF.md](HANDOFF.md)" in index_text
+    assert "[CAPSULE.md](CAPSULE.md)" in index_text
+    assert "[next-ai-prompt.md](next-ai-prompt.md)" in index_text
+    assert "[handoff.json](handoff.json)" in index_text
+    assert "[capsule.json](capsule.json)" in index_text
+    assert "[okf/](okf/)" in index_text
+    assert "[pam/](pam/)" in index_text
+    assert "/System Outputs/homestead-private-os/" in index_text
+
+    listed = client.get("/outputs")
+    read = client.get(f"/outputs/{output_id}")
+    boot = client.get("/agent/boot")
+    caps = client.get("/os/capabilities")
+
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 1
+    assert listed.json()["outputs"][0]["output_id"] == output_id
+    assert read.status_code == 200
+    assert read.json()["output_id"] == output_id
+    assert expected.issubset(set(read.json()["files"]))
+    assert "bundle_path" not in read.json()
+    assert "index.md" in read.json()["markdown"]
+    assert "Continue from this capsule" in read.json()["markdown"]["next-ai-prompt.md"]
+    assert boot.json()["output_capsules"]["count"] == 1
+    output_caps = caps.json()["entries"]["output_capsules"]
+    assert output_caps["enabled"] is True
+    assert output_caps["status"] == "manual_only"
+    assert output_caps["root"] == "/System Outputs"
+    assert output_caps["policy_gate"] == "required"
+    assert output_caps["runner_enabled"] is False
+    assert output_caps["scheduler_enabled"] is False
+
+    duplicate = client.post(
+        "/outputs",
+        headers=headers,
+        json={
+            "title": "Agent Boot Projects",
+            "summary": "Duplicate should not overwrite.",
+            "project_id": "homestead-private-os",
+            "slug": "agent-boot-projects",
+            "created_by": "codex",
+        },
+    )
+    assert duplicate.status_code == 409
+
+    secret_like = "OPENROUTER" + "_API" + "_KEY" + "=" + "sk-secret-should-not-write"
+    leak_response = client.post(
+        "/outputs",
+        headers=headers,
+        json={
+            "title": "Secret Leak",
+            "summary": secret_like,
+            "project_id": "homestead-private-os",
+            "slug": "secret-leak",
+            "created_by": "codex",
+        },
+    )
+    assert leak_response.status_code == 400
+    assert list((tmp_path / "System Outputs" / "homestead-private-os").glob("*secret-leak")) == []
+
+    missing_command = client.post(
+        "/outputs",
+        headers=headers,
+        json={
+            "title": "Missing Link",
+            "summary": "Should reject nonexistent command links.",
+            "project_id": "homestead-private-os",
+            "slug": "missing-link",
+            "command_id": "cmd-deadbeef",
+            "created_by": "codex",
+        },
+    )
+    assert missing_command.status_code == 404
+    assert missing_command.json()["detail"] == "command not found"
+
+    combined = (
+        created.text
+        + listed.text
+        + read.text
+        + boot.text
+        + caps.text
+        + duplicate.text
+        + leak_response.text
+        + missing_command.text
+    )
+    assert "super-secret-openrouter" not in combined
+    assert secret_like not in combined
+    assert POLICY_TOKEN not in combined
+    assert str(tmp_path) not in combined
+
+
+def test_output_capsule_partial_failure_does_not_claim_final_path(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+    headers = trusted_codex_headers(monkeypatch)
+    original_renderer = main.output_capsule_markdown
+
+    def fail_capsule_render(metadata, body):
+        raise RuntimeError("simulated capsule render failure")
+
+    monkeypatch.setattr(main, "output_capsule_markdown", fail_capsule_render)
+    non_raising_client = TestClient(app, raise_server_exceptions=False)
+    failed = non_raising_client.post(
+        "/outputs",
+        headers=headers,
+        json={
+            "title": "Retryable Capsule",
+            "summary": "A failed bundle write must not claim the final path.",
+            "project_id": "homestead-private-os",
+            "slug": "retryable-capsule",
+            "created_by": "codex",
+        },
+    )
+    assert failed.status_code == 500
+    published = [
+        path
+        for path in (tmp_path / "System Outputs" / "homestead-private-os").glob("*retryable-capsule")
+        if not path.name.startswith(".")
+    ]
+    assert published == []
+
+    monkeypatch.setattr(main, "output_capsule_markdown", original_renderer)
+    created = client.post(
+        "/outputs",
+        headers=headers,
+        json={
+            "title": "Retryable Capsule",
+            "summary": "A retry can publish the final bundle.",
+            "project_id": "homestead-private-os",
+            "slug": "retryable-capsule",
+            "created_by": "codex",
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["summary"]["relative_path"].endswith("-retryable-capsule")
+
+
 def test_os_capabilities_registry_is_agent_safe_without_secrets(monkeypatch, tmp_path):
     init_repo(tmp_path)
     monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))

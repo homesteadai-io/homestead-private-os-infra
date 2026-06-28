@@ -14,6 +14,7 @@ app = FastAPI(title="Homestead MCP Facade", version="0.1.0")
 PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 COMMAND_ID_RE = re.compile(r"cmd-[a-f0-9]{8}")
 SESSION_ID_RE = re.compile(r"session-[a-f0-9]{8}")
+OUTPUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*--\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*")
 
 TOOLS = [
     {
@@ -145,6 +146,34 @@ TOOLS = [
         "input_schema": {"session_id": "string"},
     },
     {
+        "name": "homestead.outputs_write",
+        "description": "Write a durable Homestead output capsule bundle.",
+        "input_schema": {
+            "title": "string",
+            "summary": "string",
+            "project_id": "string optional",
+            "slug": "string optional",
+            "command_id": "string optional",
+            "session_id": "string optional",
+            "created_by": "string optional",
+            "handoff": "string optional",
+            "capsule": "string optional",
+            "next_ai_prompt": "string optional",
+            "okf": "object optional",
+            "pam": "object optional",
+        },
+    },
+    {
+        "name": "homestead.outputs_list",
+        "description": "List durable Homestead output capsule summaries.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.outputs_read",
+        "description": "Read one durable Homestead output capsule bundle.",
+        "input_schema": {"output_id": "string"},
+    },
+    {
         "name": "homestead.ops_policy",
         "description": "Return the manual ops policy gate configuration.",
         "input_schema": {},
@@ -218,6 +247,16 @@ def require_session_id(arguments: dict[str, Any]) -> str:
     normalized = session_id.strip().lower()
     if not SESSION_ID_RE.fullmatch(normalized):
         raise HTTPException(status_code=400, detail="session_id contains unsupported characters")
+    return normalized
+
+
+def require_output_id(arguments: dict[str, Any]) -> str:
+    output_id = arguments.get("output_id")
+    if not isinstance(output_id, str) or not output_id:
+        raise HTTPException(status_code=400, detail="output_id is required")
+    normalized = output_id.strip().lower()
+    if not OUTPUT_ID_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="output_id contains unsupported characters")
     return normalized
 
 
@@ -328,6 +367,13 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
     if tool == "homestead.session_read":
         session_id = require_session_id(arguments)
         return await api_request("GET", f"/agent/sessions/{quote(session_id, safe='')}")
+    if tool == "homestead.outputs_write":
+        return await api_request("POST", "/outputs", arguments)
+    if tool == "homestead.outputs_list":
+        return await api_request("GET", "/outputs")
+    if tool == "homestead.outputs_read":
+        output_id = require_output_id(arguments)
+        return await api_request("GET", f"/outputs/{quote(output_id, safe='')}")
     if tool == "homestead.ops_policy":
         return await api_request("GET", "/ops/policy")
     if tool == "homestead.check_ops_policy":
