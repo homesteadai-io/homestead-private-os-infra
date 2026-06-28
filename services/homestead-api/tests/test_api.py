@@ -100,6 +100,170 @@ def test_receipt_create_is_append_only(monkeypatch, tmp_path):
     assert duplicate.status_code == 409
 
 
+def write_test_receipt(root: Path, date: str, receipt_id: str, payload: dict, markdown: str | None = None) -> None:
+    date_dir = root / date
+    date_dir.mkdir(parents=True, exist_ok=True)
+    data = {"run_id": receipt_id, "timestamp": f"{date}T12:00:00Z", **payload}
+    (date_dir / f"{receipt_id}.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    (date_dir / f"{receipt_id}.md").write_text(markdown or f"# Receipt {receipt_id}\n", encoding="utf-8")
+
+
+def test_receipts_recent_lists_metadata_only(monkeypatch, tmp_path):
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "model-route-new",
+        {
+            "requesting_agent": "pytest",
+            "task": "model_route",
+            "model_used": "openai/gpt-4.1-mini",
+            "files_read": [],
+            "actions_taken": ["called route"],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "ok",
+            "metadata": {
+                "route": "/model/route",
+                "requested_model": "openai/gpt-4.1-mini",
+                "model_used": "openai/gpt-4.1-mini-2025-04-14",
+                "latency_ms": 123,
+                "ok": True,
+                "usage": {"total_tokens": 9},
+                "langfuse_trace_id": "trace-123",
+            },
+        },
+        markdown="# Receipt\n\nprompt-only-secret should stay out of lists\n",
+    )
+    write_test_receipt(
+        receipts,
+        "2026-06-27",
+        "old-format",
+        {
+            "requesting_agent": "legacy",
+            "task": "legacy_task",
+            "model_used": "not_applicable_v0",
+            "files_read": [],
+            "actions_taken": [],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "ok",
+        },
+    )
+
+    response = client.get("/receipts/recent?limit=10")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    first = body["receipts"][0]
+    assert first["receipt_id"] == "model-route-new"
+    assert first["route"] == "/model/route"
+    assert first["requested_model"] == "openai/gpt-4.1-mini"
+    assert first["latency_ms"] == 123
+    assert first["usage"]["total_tokens"] == 9
+    assert first["langfuse_trace_id"] == "trace-123"
+    assert "prompt-only-secret" not in json.dumps(body)
+    legacy = body["receipts"][1]
+    assert legacy["receipt_id"] == "old-format"
+    assert legacy["route"] is None
+    assert legacy["model_used"] == "not_applicable_v0"
+
+
+def test_receipts_by_date_and_read_one(monkeypatch, tmp_path):
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "model-route-read",
+        {
+            "requesting_agent": "pytest-read",
+            "task": "model_route",
+            "model_used": "openai/gpt-4.1-mini",
+            "files_read": [],
+            "actions_taken": ["called route"],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "ok",
+            "metadata": {"route": "/model/route", "ok": True},
+        },
+        markdown="# Read Me\n\nExplicit receipt content.\n",
+    )
+
+    by_date = client.get("/receipts/by-date/2026-06-28")
+    read_one = client.get("/receipts/2026-06-28/model-route-read")
+
+    assert by_date.status_code == 200
+    assert by_date.json()["count"] == 1
+    assert by_date.json()["receipts"][0]["receipt_id"] == "model-route-read"
+    assert "Explicit receipt content" not in json.dumps(by_date.json())
+    assert read_one.status_code == 200
+    assert read_one.json()["receipt_id"] == "model-route-read"
+    assert read_one.json()["json"]["requesting_agent"] == "pytest-read"
+    assert "Explicit receipt content" in read_one.json()["markdown"]
+
+
+def test_receipt_missing_and_malformed_date_are_safe(monkeypatch, tmp_path):
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+
+    missing = client.get("/receipts/2026-06-28/missing")
+    bad_date = client.get("/receipts/by-date/not-a-date")
+    bad_id = client.get("/receipts/2026-06-28/bad%20id")
+
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "receipt not found"
+    assert bad_date.status_code == 400
+    assert bad_date.json()["detail"] == "date must be YYYY-MM-DD"
+    assert bad_id.status_code == 400
+    assert "unsupported characters" in bad_id.json()["detail"]
+
+
+def test_receipt_stats(monkeypatch, tmp_path):
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "ok-run",
+        {
+            "requesting_agent": "pytest",
+            "task": "model_route",
+            "model_used": "model",
+            "files_read": [],
+            "actions_taken": [],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "ok",
+        },
+    )
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "needs-review",
+        {
+            "requesting_agent": "pytest",
+            "task": "model_route",
+            "model_used": "model",
+            "files_read": [],
+            "actions_taken": [],
+            "files_changed": [],
+            "review_required": True,
+            "verdict": "error",
+        },
+    )
+
+    response = client.get("/receipts/stats")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert response.json()["by_task"]["model_route"] == 2
+    assert response.json()["by_verdict"]["ok"] == 1
+    assert response.json()["by_verdict"]["error"] == 1
+    assert response.json()["review_required"] == 1
+
+
 def test_model_route_requires_openrouter_config(monkeypatch):
     for name in [
         "OPENROUTER_API_KEY",

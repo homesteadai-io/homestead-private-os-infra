@@ -285,6 +285,33 @@ curl http://<tailscale-ip>:8088/mcp/tools
 
 If the laptop is not signed into Tailscale, these requests should time out. That is expected and is better than accidentally exposing the private OS spine.
 
+## Receipt Read Surface
+
+Receipts are stored under:
+
+```text
+/opt/homestead/data/receipts/YYYY-MM-DD/
+```
+
+Read-only receipt index endpoints are available through the private API path:
+
+```powershell
+curl http://<tailscale-ip>:8088/api/receipts/recent?limit=20
+curl http://<tailscale-ip>:8088/api/receipts/by-date/<YYYY-MM-DD>
+curl http://<tailscale-ip>:8088/api/receipts/<YYYY-MM-DD>/<receipt-id>
+curl http://<tailscale-ip>:8088/api/receipts/stats
+```
+
+List endpoints return metadata summaries only. Exact receipt reads return the parsed JSON and Markdown for the explicitly requested receipt.
+
+MCP tools:
+
+```text
+homestead.list_recent_receipts
+homestead.read_receipt
+homestead.receipt_stats
+```
+
 ## Always-On Runtime Check
 
 The stack should not depend on Adam's laptop. Docker services use `restart: unless-stopped`, and Docker itself is enabled through systemd.

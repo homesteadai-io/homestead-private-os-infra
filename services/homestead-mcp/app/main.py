@@ -44,6 +44,21 @@ TOOLS = [
             "verdict": "string optional",
         },
     },
+    {
+        "name": "homestead.list_recent_receipts",
+        "description": "List recent Homestead receipts as metadata summaries.",
+        "input_schema": {"limit": "integer optional"},
+    },
+    {
+        "name": "homestead.read_receipt",
+        "description": "Read one Homestead receipt by date and receipt id.",
+        "input_schema": {"date": "YYYY-MM-DD string", "receipt_id": "string"},
+    },
+    {
+        "name": "homestead.receipt_stats",
+        "description": "Return aggregate counts for Homestead receipts.",
+        "input_schema": {},
+    },
 ]
 
 
@@ -100,6 +115,16 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         return await api_request("GET", "/repo/status")
     if tool == "homestead.create_receipt":
         return await api_request("POST", "/receipt/create", arguments)
+    if tool == "homestead.list_recent_receipts":
+        limit = int(arguments.get("limit", 20))
+        return await api_request("GET", f"/receipts/recent?limit={limit}")
+    if tool == "homestead.read_receipt":
+        date = arguments.get("date")
+        receipt_id = arguments.get("receipt_id")
+        if not isinstance(date, str) or not isinstance(receipt_id, str):
+            raise HTTPException(status_code=400, detail="date and receipt_id are required")
+        return await api_request("GET", f"/receipts/{date}/{receipt_id}")
+    if tool == "homestead.receipt_stats":
+        return await api_request("GET", "/receipts/stats")
 
     raise HTTPException(status_code=404, detail=f"unknown tool: {tool}")
-
