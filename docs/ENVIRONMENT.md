@@ -83,6 +83,14 @@ infra/docker-compose.litellm.yml
 
 It attaches `homestead-api` to the existing external Docker network `arlo-net` so the API container can reach the inherited LiteLLM container at `http://litellm:4000` without publishing LiteLLM publicly or over Tailscale.
 
+When this overlay is active, Homestead can also reach the inherited Langfuse web container privately at:
+
+```text
+LANGFUSE_HOST=http://langfuse-web:3000
+```
+
+This is preferable inside the API container to the Tailscale UI address.
+
 ## Optional Langfuse Tracing
 
 These optionally trace `/model/route` while keeping the serving path on the selected model gateway. Tracing is disabled by default and must fail open: if Langfuse is missing, unavailable, or rejects auth, `/model/route` should still return the model response.

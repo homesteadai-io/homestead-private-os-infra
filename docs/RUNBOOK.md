@@ -203,6 +203,14 @@ docker compose \
 
 The overlay attaches `homestead-api` to the existing external Docker network `arlo-net`, where the inherited LiteLLM container is reachable as `http://litellm:4000`. Do not expose LiteLLM publicly or over Tailscale to make this work.
 
+When using the overlay, use the internal Langfuse host for Homestead tracing:
+
+```bash
+LANGFUSE_HOST=http://langfuse-web:3000
+```
+
+The Tailscale URL remains the operator UI path from Adam's laptop, but the API container should use Docker DNS.
+
 Verify LiteLLM variable names without printing values:
 
 ```bash

@@ -67,6 +67,7 @@ LITELLM_BASE_URL=http://litellm:4000
 LITELLM_API_KEY=<set>
 LITELLM_DEFAULT_MODEL=haiku
 LITELLM_SEND_TEMPERATURE=false
+LANGFUSE_HOST=http://langfuse-web:3000
 ```
 
 For the temporary proof, switch only:
@@ -95,6 +96,67 @@ Prove all of the following:
 - Production is restored to `MODEL_GATEWAY=direct`.
 - Public `:8088`, `:3000`, `:9090`, and `:4000` remain closed.
 - Tailscale `:4000` remains closed.
+
+## Live Proof Result
+
+Task 5C live proof passed on 2026-06-28.
+
+Server checkout during proof:
+
+```text
+branch: codex/litellm-optional-gateway
+head: 477a4b2
+```
+
+Private network proof:
+
+```text
+homestead-api networks: homestead-private-os_default, arlo-net
+LiteLLM internal URL: http://litellm:4000
+authenticated LiteLLM health from homestead-api container: 200
+internal Langfuse health from homestead-api container: 200
+```
+
+Direct mode after overlay:
+
+```text
+/model/route gateway=direct
+model=openai/gpt-4.1-mini-2025-04-14
+receipt written
+Langfuse trace id present
+```
+
+Temporary LiteLLM mode:
+
+```text
+/model/route gateway=litellm
+model=haiku
+receipt=model-route-5ec2bce8fed0
+receipt metadata gateway=litellm
+receipt index read succeeded
+Langfuse trace=df59c50479784312822c42f35eeaa874
+Langfuse metadata gateway=litellm, route=/model/route, ok=True
+prompt/content omitted from receipt/index output by default
+```
+
+Production restored:
+
+```text
+MODEL_GATEWAY=direct
+/model/route gateway=direct
+latest direct receipt has Langfuse trace id
+```
+
+Exposure after proof:
+
+```text
+public :8088 -> closed
+public :4000 -> closed
+Tailscale :4000 -> closed
+public :3000 -> closed
+public :9090 -> closed
+private :8088 -> healthy
+```
 
 ## Recommendation
 

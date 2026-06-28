@@ -395,6 +395,7 @@ MODEL_GATEWAY=litellm
 LITELLM_BASE_URL=http://litellm:4000
 LITELLM_DEFAULT_MODEL=haiku
 LITELLM_SEND_TEMPERATURE=false
+LANGFUSE_HOST=http://langfuse-web:3000
 ```
 
 After the proof, restore:

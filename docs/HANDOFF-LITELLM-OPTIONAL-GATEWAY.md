@@ -105,6 +105,12 @@ The overlay attaches only `homestead-api` to the existing external `arlo-net` ne
 http://litellm:4000
 ```
 
+With the same overlay, Homestead should use the internal Langfuse URL for tracing:
+
+```text
+LANGFUSE_HOST=http://langfuse-web:3000
+```
+
 Do not expose LiteLLM publicly or over Tailscale to solve this.
 
 ## Tests
