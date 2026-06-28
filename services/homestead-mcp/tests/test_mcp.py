@@ -27,6 +27,9 @@ def test_tools_surface_lists_required_homestead_tools():
     assert "homestead.os_status" in names
     assert "homestead.os_context" in names
     assert "homestead.os_capabilities" in names
+    assert "homestead.agent_boot" in names
+    assert "homestead.projects" in names
+    assert "homestead.project_context" in names
     assert "homestead.ops_policy" in names
     assert "homestead.check_ops_policy" in names
     assert "homestead.list_manual_ops" in names
@@ -112,6 +115,12 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
     os_status = client.post("/call", json={"tool": "homestead.os_status", "arguments": {}})
     os_context = client.post("/call", json={"tool": "homestead.os_context", "arguments": {}})
     os_capabilities = client.post("/call", json={"tool": "homestead.os_capabilities", "arguments": {}})
+    agent_boot = client.post("/call", json={"tool": "homestead.agent_boot", "arguments": {}})
+    projects = client.post("/call", json={"tool": "homestead.projects", "arguments": {}})
+    project_context = client.post(
+        "/call",
+        json={"tool": "homestead.project_context", "arguments": {"project_id": "homestead-private-os"}},
+    )
     ops_policy = client.post("/call", json={"tool": "homestead.ops_policy", "arguments": {}})
     check_ops_policy = client.post(
         "/call",
@@ -152,6 +161,9 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
     assert os_status.status_code == 200
     assert os_context.status_code == 200
     assert os_capabilities.status_code == 200
+    assert agent_boot.status_code == 200
+    assert projects.status_code == 200
+    assert project_context.status_code == 200
     assert ops_policy.status_code == 200
     assert check_ops_policy.status_code == 200
     assert list_manual_ops.status_code == 200
@@ -164,6 +176,9 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
         ("GET", "/os/status", None),
         ("GET", "/os/context", None),
         ("GET", "/os/capabilities", None),
+        ("GET", "/agent/boot", None),
+        ("GET", "/os/projects", None),
+        ("GET", "/os/projects/homestead-private-os", None),
         ("GET", "/ops/policy", None),
         (
             "POST",
@@ -176,3 +191,17 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
         ("GET", "/ops/recent?limit=4", None),
         ("POST", "/ops/actions/run", {"action": "sync_keep_health", "requesting_agent": "pytest", "note": "sync"}),
     ]
+
+
+def test_project_context_requires_project_id():
+    response = client.post("/call", json={"tool": "homestead.project_context", "arguments": {}})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "project_id is required"
+
+
+def test_project_context_rejects_non_slug_project_id():
+    response = client.post("/call", json={"tool": "homestead.project_context", "arguments": {"project_id": "bad/id?x=1"}})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "project_id must be a slug"

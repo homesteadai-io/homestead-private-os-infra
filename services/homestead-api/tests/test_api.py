@@ -441,6 +441,66 @@ def test_os_context_is_cloud_first_with_local_disabled(monkeypatch, tmp_path):
     assert "homestead.receipts_review" in body["mcp_tools"]
     assert body["keep"]["health_receipts_enabled"] is True
     assert body["keep"]["policy"]["source_control"] == "may_remain_dirty_until_separate_keep_sync_policy"
+    assert "homestead.agent_boot" in body["mcp_tools"]
+    assert "homestead.projects" in body["mcp_tools"]
+    assert "homestead.project_context" in body["mcp_tools"]
+
+
+def test_agent_boot_and_projects_are_agent_safe_without_secrets(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-secret")
+    monkeypatch.setenv("OPS_POLICY_SURFACE_TOKEN", POLICY_TOKEN)
+
+    boot = client.get("/agent/boot")
+    projects = client.get("/os/projects")
+    project = client.get("/os/projects/homestead-private-os")
+    missing = client.get("/os/projects/not-real")
+
+    assert boot.status_code == 200
+    body = boot.json()
+    assert body["release"] == "v0-agent-boot-projects"
+    assert body["orientation"]["who_is_adam"] == "Adam is the authority. Agents and Codex are operators."
+    assert body["authority"]["agents_decide_next_work"] is False
+    assert body["loop_protocol"]["needs_decision"] == "escalate_to_adam"
+    assert body["project_registry"]["default_project_id"] == "homestead-private-os"
+    assert body["active_project"]["project_id"] == "homestead-private-os"
+    assert body["capabilities"]["entries"]["agent_boot"]["enabled"] is True
+    assert body["capabilities"]["entries"]["project_registry"]["project_count"] >= 6
+    assert body["manual_ops"]["catalog"]["mode"] == "manual_only"
+    assert body["disabled"]["runner"]["enabled"] is False
+    assert body["disabled"]["local_mode"]["enabled"] is False
+    assert body["disabled"]["dashboard"]["enabled"] is False
+    assert body["content_policy"]["prompt_capture_default"] is False
+    assert body["content_policy"]["completion_capture_default"] is False
+    assert "/docs/HANDOFF-AGENT-BOOT-PROJECTS.md" in body["read_first"]
+
+    assert projects.status_code == 200
+    assert projects.json()["mode"] == "config_backed"
+    project_ids = {item["project_id"] for item in projects.json()["projects"]}
+    assert {"homestead-private-os", "the-keep", "lyhna-witness", "loop-forge"}.issubset(project_ids)
+    assert project.status_code == 200
+    assert project.json()["authority"]["adam"] == "authority"
+    assert project.json()["authority"]["autonomous_claiming"] is False
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "unknown project"
+    combined = boot.text + projects.text + project.text + missing.text
+    assert "super-secret" not in combined
+    assert "sk-secret" not in combined
+    assert POLICY_TOKEN not in combined
+
+
+def test_project_context_rejects_non_slug_ids_without_echoing_input(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+
+    response = client.get("/os/projects/not%20a%20secret")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "unknown project"
+    assert "secret" not in response.text
 
 
 def test_os_capabilities_registry_is_agent_safe_without_secrets(monkeypatch, tmp_path):
@@ -469,6 +529,8 @@ def test_os_capabilities_registry_is_agent_safe_without_secrets(monkeypatch, tmp
     assert body["cloud_first"] is True
     assert body["production_default_gateway"] == "direct"
     assert entries["model_route"]["enabled"] is True
+    assert entries["agent_boot"]["surface"] == ["/agent/boot", "homestead.agent_boot"]
+    assert entries["project_registry"]["status"] == "config_backed"
     assert entries["direct_openrouter_gateway"]["status"] == "production_default"
     assert entries["litellm_gateway"]["status"] == "available_private_optional"
     assert entries["ops_policy_gate"]["enabled"] is True
