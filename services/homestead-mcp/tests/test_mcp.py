@@ -30,6 +30,14 @@ def test_tools_surface_lists_required_homestead_tools():
     assert "homestead.agent_boot" in names
     assert "homestead.projects" in names
     assert "homestead.project_context" in names
+    assert "homestead.commands_create" in names
+    assert "homestead.commands_list" in names
+    assert "homestead.commands_read" in names
+    assert "homestead.commands_update" in names
+    assert "homestead.session_start" in names
+    assert "homestead.session_end" in names
+    assert "homestead.sessions" in names
+    assert "homestead.session_read" in names
     assert "homestead.ops_policy" in names
     assert "homestead.check_ops_policy" in names
     assert "homestead.list_manual_ops" in names
@@ -205,3 +213,69 @@ def test_project_context_rejects_non_slug_project_id():
 
     assert response.status_code == 400
     assert response.json()["detail"] == "project_id must be a slug"
+
+
+def test_command_session_tools_dispatch_to_api(monkeypatch):
+    calls = []
+
+    async def fake_api_request(method, path, json_body=None):
+        calls.append((method, path, json_body))
+        return {"ok": True, "path": path}
+
+    monkeypatch.setattr(main, "api_request", fake_api_request)
+
+    create = client.post("/call", json={"tool": "homestead.commands_create", "arguments": {"title": "Do work"}})
+    list_commands = client.post("/call", json={"tool": "homestead.commands_list", "arguments": {}})
+    read = client.post("/call", json={"tool": "homestead.commands_read", "arguments": {"command_id": "cmd-1234abcd"}})
+    update = client.post(
+        "/call",
+        json={"tool": "homestead.commands_update", "arguments": {"command_id": "cmd-1234abcd", "status": "working"}},
+    )
+    start = client.post(
+        "/call",
+        json={"tool": "homestead.session_start", "arguments": {"agent": "codex", "command_id": "cmd-1234abcd"}},
+    )
+    end = client.post(
+        "/call",
+        json={"tool": "homestead.session_end", "arguments": {"session_id": "session-1234abcd", "outcome": "done"}},
+    )
+    sessions = client.post("/call", json={"tool": "homestead.sessions", "arguments": {}})
+    session_read = client.post(
+        "/call",
+        json={"tool": "homestead.session_read", "arguments": {"session_id": "session-1234abcd"}},
+    )
+
+    assert create.status_code == 200
+    assert list_commands.status_code == 200
+    assert read.status_code == 200
+    assert update.status_code == 200
+    assert start.status_code == 200
+    assert end.status_code == 200
+    assert sessions.status_code == 200
+    assert session_read.status_code == 200
+    assert calls == [
+        ("POST", "/commands", {"title": "Do work"}),
+        ("GET", "/commands", None),
+        ("GET", "/commands/cmd-1234abcd", None),
+        ("PATCH", "/commands/cmd-1234abcd", {"status": "working"}),
+        ("POST", "/agent/sessions/start", {"agent": "codex", "command_id": "cmd-1234abcd"}),
+        ("POST", "/agent/sessions/end", {"session_id": "session-1234abcd", "outcome": "done"}),
+        ("GET", "/agent/sessions", None),
+        ("GET", "/agent/sessions/session-1234abcd", None),
+    ]
+
+
+def test_command_session_tools_reject_bad_ids():
+    bad_command = client.post("/call", json={"tool": "homestead.commands_read", "arguments": {"command_id": "cmd/bad"}})
+    missing_session = client.post("/call", json={"tool": "homestead.session_read", "arguments": {}})
+    bad_session = client.post(
+        "/call",
+        json={"tool": "homestead.session_read", "arguments": {"session_id": "session/bad"}},
+    )
+
+    assert bad_command.status_code == 400
+    assert bad_command.json()["detail"] == "command_id contains unsupported characters"
+    assert missing_session.status_code == 400
+    assert missing_session.json()["detail"] == "session_id is required"
+    assert bad_session.status_code == 400
+    assert bad_session.json()["detail"] == "session_id contains unsupported characters"

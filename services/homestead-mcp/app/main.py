@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="Homestead MCP Facade", version="0.1.0")
 PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+COMMAND_ID_RE = re.compile(r"cmd-[a-f0-9]{8}")
+SESSION_ID_RE = re.compile(r"session-[a-f0-9]{8}")
 
 TOOLS = [
     {
@@ -103,6 +105,46 @@ TOOLS = [
         "input_schema": {"project_id": "string"},
     },
     {
+        "name": "homestead.commands_create",
+        "description": "Create a manual Adam-commanded work command.",
+        "input_schema": {"title": "string", "description": "string optional", "project_id": "string optional"},
+    },
+    {
+        "name": "homestead.commands_list",
+        "description": "List manual Homestead commands.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.commands_read",
+        "description": "Read one manual Homestead command.",
+        "input_schema": {"command_id": "string"},
+    },
+    {
+        "name": "homestead.commands_update",
+        "description": "Update one manual Homestead command.",
+        "input_schema": {"command_id": "string", "status": "string optional", "session_id": "string optional"},
+    },
+    {
+        "name": "homestead.session_start",
+        "description": "Start a manual agent work session.",
+        "input_schema": {"agent": "string", "command_id": "string optional", "project_id": "string optional"},
+    },
+    {
+        "name": "homestead.session_end",
+        "description": "End a manual agent work session.",
+        "input_schema": {"session_id": "string", "outcome": "string optional"},
+    },
+    {
+        "name": "homestead.sessions",
+        "description": "List manual Homestead agent sessions.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.session_read",
+        "description": "Read one manual Homestead agent session.",
+        "input_schema": {"session_id": "string"},
+    },
+    {
         "name": "homestead.ops_policy",
         "description": "Return the manual ops policy gate configuration.",
         "input_schema": {},
@@ -157,6 +199,26 @@ class ToolCall(BaseModel):
 
 def api_url() -> str:
     return os.getenv("HOMESTEAD_API_URL", "http://homestead-api:8000").rstrip("/")
+
+
+def require_command_id(arguments: dict[str, Any]) -> str:
+    command_id = arguments.get("command_id")
+    if not isinstance(command_id, str) or not command_id:
+        raise HTTPException(status_code=400, detail="command_id is required")
+    normalized = command_id.strip().lower()
+    if not COMMAND_ID_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="command_id contains unsupported characters")
+    return normalized
+
+
+def require_session_id(arguments: dict[str, Any]) -> str:
+    session_id = arguments.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    normalized = session_id.strip().lower()
+    if not SESSION_ID_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="session_id contains unsupported characters")
+    return normalized
 
 
 async def api_request(method: str, path: str, json_body: dict[str, Any] | None = None) -> Any:
@@ -246,6 +308,26 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         if not PROJECT_ID_RE.fullmatch(normalized_project_id):
             raise HTTPException(status_code=400, detail="project_id must be a slug")
         return await api_request("GET", f"/os/projects/{quote(normalized_project_id, safe='')}")
+    if tool == "homestead.commands_create":
+        return await api_request("POST", "/commands", arguments)
+    if tool == "homestead.commands_list":
+        return await api_request("GET", "/commands")
+    if tool == "homestead.commands_read":
+        command_id = require_command_id(arguments)
+        return await api_request("GET", f"/commands/{quote(command_id, safe='')}")
+    if tool == "homestead.commands_update":
+        command_id = require_command_id(arguments)
+        payload = {key: value for key, value in arguments.items() if key != "command_id"}
+        return await api_request("PATCH", f"/commands/{quote(command_id, safe='')}", payload)
+    if tool == "homestead.session_start":
+        return await api_request("POST", "/agent/sessions/start", arguments)
+    if tool == "homestead.session_end":
+        return await api_request("POST", "/agent/sessions/end", arguments)
+    if tool == "homestead.sessions":
+        return await api_request("GET", "/agent/sessions")
+    if tool == "homestead.session_read":
+        session_id = require_session_id(arguments)
+        return await api_request("GET", f"/agent/sessions/{quote(session_id, safe='')}")
     if tool == "homestead.ops_policy":
         return await api_request("GET", "/ops/policy")
     if tool == "homestead.check_ops_policy":
