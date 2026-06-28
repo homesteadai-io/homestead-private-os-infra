@@ -29,6 +29,7 @@ services:
       LANGFUSE_RELEASE: ${LANGFUSE_RELEASE:-v0-openrouter-route}
       MODEL_ROUTE_RECEIPTS_ENABLED: ${MODEL_ROUTE_RECEIPTS_ENABLED:-false}
       MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT: ${MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT:-false}
+      OPS_POLICY_SURFACE_TOKEN: ${OPS_POLICY_SURFACE_TOKEN:-}
     volumes:
       - ${KEEP_REPO_HOST_PATH:-../}:/workspace/keep
       - ${HOMESTEAD_DATA_PATH:-../data}:/data
@@ -45,6 +46,7 @@ services:
     restart: unless-stopped
     environment:
       HOMESTEAD_API_URL: ${HOMESTEAD_API_URL:-http://homestead-api:8000}
+      HOMESTEAD_MCP_POLICY_TOKEN: ${HOMESTEAD_MCP_POLICY_TOKEN:-}
     depends_on:
       homestead-api:
         condition: service_healthy
