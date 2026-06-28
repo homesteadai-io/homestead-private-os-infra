@@ -60,6 +60,11 @@ TOOLS = [
         "input_schema": {},
     },
     {
+        "name": "homestead.receipts_review",
+        "description": "List receipt summaries that need Adam's attention.",
+        "input_schema": {"limit": "integer optional"},
+    },
+    {
         "name": "homestead.node_status",
         "description": "Return Homestead cloud node health, configuration, and receipt status.",
         "input_schema": {},
@@ -72,6 +77,11 @@ TOOLS = [
     {
         "name": "homestead.os_context",
         "description": "Return cloud-first Homestead OS context, capabilities, and local-mode readiness.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.os_capabilities",
+        "description": "Return Homestead capability registry with enabled, disabled, and future-only surfaces.",
         "input_schema": {},
     },
     {
@@ -146,12 +156,17 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         return await api_request("GET", f"/receipts/{date}/{receipt_id}")
     if tool == "homestead.receipt_stats":
         return await api_request("GET", "/receipts/stats")
+    if tool == "homestead.receipts_review":
+        limit = int(arguments.get("limit", 20))
+        return await api_request("GET", f"/receipts/review?limit={limit}")
     if tool == "homestead.node_status":
         return await api_request("GET", "/node/status")
     if tool == "homestead.os_status":
         return await api_request("GET", "/os/status")
     if tool == "homestead.os_context":
         return await api_request("GET", "/os/context")
+    if tool == "homestead.os_capabilities":
+        return await api_request("GET", "/os/capabilities")
     if tool == "homestead.sync_keep_health":
         return await api_request("POST", "/keep/health/sync", arguments)
 

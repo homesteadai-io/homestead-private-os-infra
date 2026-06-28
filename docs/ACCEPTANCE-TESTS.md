@@ -710,6 +710,7 @@ From Adam's laptop:
 curl.exe --max-time 10 http://<tailscale-ip>:8088/api/node/status
 curl.exe --max-time 10 http://<tailscale-ip>:8088/api/os/status
 curl.exe --max-time 10 http://<tailscale-ip>:8088/api/os/context
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/os/capabilities
 ```
 
 Expected:
@@ -752,7 +753,72 @@ no secret values
 The Keep has homestead-latest.md, homestead-health-log.md, daily/YYYY-MM-DD.md, gateway/gateway-health.md, and snapshots/<timestamp>.md
 ```
 
-## 18. Reboot Survival
+## 18. Review Queue And Capability Registry
+
+From Adam's laptop:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/receipts/review?limit=20
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/os/capabilities
+```
+
+Expected review queue behavior:
+
+```text
+response is metadata-only
+queue_empty is true when no receipt needs review
+receipts include only attention-worthy receipt summaries
+review reasons include review_required, verdict:<value>, metadata_ok:false, or error_summary_present when applicable
+no receipt Markdown body is returned
+no prompt/content, API keys, headers, raw env, or stack traces are returned
+```
+
+Expected capability registry behavior:
+
+```text
+cloud_first=true
+model_route is active
+direct_openrouter_gateway is production_default
+litellm_gateway is available_private_optional, not production default
+review_queue is active and read-only
+keep_health_sync is explicit_only
+local_mode is disabled
+runner is disabled
+alerts is disabled
+dashboard is disabled
+```
+
+MCP tools:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.receipts_review","arguments":{"limit":10}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.os_capabilities","arguments":{}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected MCP tools:
+
+```text
+homestead.receipts_review
+homestead.os_capabilities
+```
+
+Keep health folder policy:
+
+```text
+/System Receipts/Homestead Health is operational memory, not infra source.
+It may remain dirty/untracked until a separate Keep sync policy exists.
+Agents may read it for current node context.
+Agents must not auto-commit it or write prompt/content/secrets into it.
+```
+
+## 19. Reboot Survival
 
 Run only when brief server downtime is acceptable:
 

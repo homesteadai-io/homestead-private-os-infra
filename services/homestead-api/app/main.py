@@ -221,6 +221,8 @@ def receipt_summary(json_path: Path) -> dict[str, Any]:
         "requested_model": metadata.get("requested_model"),
         "model_used": metadata.get("model_used") or data.get("model_used"),
         "latency_ms": metadata.get("latency_ms"),
+        "ok": metadata.get("ok"),
+        "error_summary": metadata.get("error_summary"),
         "usage": usage,
         "langfuse_trace_id": metadata.get("langfuse_trace_id"),
         "markdown_path": str(markdown_path),
@@ -278,6 +280,28 @@ def receipt_status_summary() -> dict[str, Any]:
         "latest": latest,
         "enabled": model_route_receipts_enabled(),
         "include_content": model_route_receipts_include_content(),
+    }
+
+
+def receipt_review_reasons(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    verdict = str(summary.get("verdict") or "").strip().lower()
+    if summary.get("review_required") is True:
+        reasons.append("review_required")
+    if verdict and verdict not in {"ok", "recorded"}:
+        reasons.append(f"verdict:{verdict}")
+    if summary.get("ok") is False:
+        reasons.append("metadata_ok:false")
+    if summary.get("error_summary"):
+        reasons.append("error_summary_present")
+    return reasons
+
+
+def receipt_review_item(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **summary,
+        "review_reasons": receipt_review_reasons(summary),
+        "attention": "review",
     }
 
 
@@ -391,6 +415,154 @@ def cloud_capabilities() -> dict[str, Any]:
     }
 
 
+def keep_health_policy() -> dict[str, Any]:
+    return {
+        "folder": "/" + keep_health_dir().relative_to(repo_path()).as_posix(),
+        "purpose": "agent-readable operational memory",
+        "write_mode": "explicit_sync_only",
+        "source_control": "may_remain_dirty_until_separate_keep_sync_policy",
+        "content_policy": {
+            "prompt_content": "omit_by_default",
+            "assistant_content": "omit_by_default",
+            "secret_values": "never_write",
+            "raw_env": "never_write",
+        },
+        "agent_guidance": [
+            "read index.md or homestead-latest.md before assuming live node state",
+            "treat untracked System Receipts files as operational memory, not infra source code",
+            "do not auto-commit Keep health files without an explicit sync policy decision",
+        ],
+    }
+
+
+def capability_registry_payload() -> dict[str, Any]:
+    status = node_status_payload()
+    gateway = status["model_gateway"]
+    capabilities = status["capabilities"]
+    entries = {
+        "cloud_node_status": {
+            "enabled": True,
+            "status": "active",
+            "surface": ["/node/status", "/os/status", "homestead.node_status", "homestead.os_status"],
+            "agent_safe": True,
+            "write_access": "none",
+        },
+        "os_context": {
+            "enabled": True,
+            "status": "active",
+            "surface": ["/os/context", "homestead.os_context"],
+            "agent_safe": True,
+            "write_access": "none",
+        },
+        "capability_registry": {
+            "enabled": True,
+            "status": "active",
+            "surface": ["/os/capabilities", "homestead.os_capabilities"],
+            "agent_safe": True,
+            "write_access": "none",
+        },
+        "model_route": {
+            "enabled": True,
+            "status": "active",
+            "surface": ["/model/route"],
+            "agent_safe": True,
+            "default_gateway": gateway["active"],
+            "write_access": "model_call_receipt_when_enabled",
+        },
+        "direct_openrouter_gateway": {
+            "enabled": gateway["active"] == "direct",
+            "status": "production_default",
+            "configured": gateway["openrouter"]["configured"],
+            "agent_safe": True,
+            "write_access": "none",
+        },
+        "litellm_gateway": {
+            "enabled": gateway["active"] == "litellm",
+            "status": "available_private_optional",
+            "configured": gateway["litellm"]["configured"],
+            "agent_safe": gateway["active"] == "litellm",
+            "activation": "set MODEL_GATEWAY=litellm only after private path proof",
+            "write_access": "none",
+        },
+        "langfuse_tracing": {
+            "enabled": capabilities["langfuse_tracing"]["enabled"],
+            "status": "optional_fail_open",
+            "configured": status["langfuse"]["configured"],
+            "agent_safe": True,
+            "write_access": "trace_metadata_only",
+        },
+        "model_route_receipts": {
+            "enabled": capabilities["model_route_receipts"]["enabled"],
+            "status": "optional_fail_open",
+            "content_capture": capabilities["model_route_receipts"]["content_capture"],
+            "agent_safe": True,
+            "write_access": "append_only_metadata",
+        },
+        "receipt_index": {
+            "enabled": True,
+            "status": "active",
+            "surface": [
+                "/receipts/recent",
+                "/receipts/by-date/{YYYY-MM-DD}",
+                "/receipts/{YYYY-MM-DD}/{receipt_id}",
+                "/receipts/stats",
+                "homestead.list_recent_receipts",
+                "homestead.read_receipt",
+                "homestead.receipt_stats",
+            ],
+            "agent_safe": True,
+            "write_access": "none",
+        },
+        "review_queue": {
+            "enabled": True,
+            "status": "active",
+            "surface": ["/receipts/review", "homestead.receipts_review"],
+            "agent_safe": True,
+            "write_access": "none",
+        },
+        "keep_health_sync": {
+            "enabled": True,
+            "status": "explicit_only",
+            "surface": ["/keep/health/sync", "homestead.sync_keep_health"],
+            "agent_safe": True,
+            "write_access": "append_operational_memory",
+            "policy": keep_health_policy(),
+        },
+        "local_mode": {
+            "enabled": False,
+            "status": "available_later",
+            "agent_safe": False,
+            "activation": "manual_switch_only",
+            "write_access": "none",
+        },
+        "runner": {
+            "enabled": False,
+            "status": "intentionally_disabled",
+            "agent_safe": False,
+            "write_access": "none",
+        },
+        "alerts": {
+            "enabled": False,
+            "status": "intentionally_disabled",
+            "agent_safe": False,
+            "write_access": "none",
+        },
+        "dashboard": {
+            "enabled": False,
+            "status": "intentionally_disabled",
+            "agent_safe": False,
+            "write_access": "none",
+        },
+    }
+    return {
+        "generated_at": status["generated_at"],
+        "cloud_first": True,
+        "production_default_gateway": gateway["active"],
+        "entries": entries,
+        "agent_rule": "Use enabled agent_safe capabilities only; treat disabled or future-only entries as unavailable.",
+    }
+
+
 def os_context_payload() -> dict[str, Any]:
     status = node_status_payload()
     return {
@@ -403,12 +575,16 @@ def os_context_payload() -> dict[str, Any]:
             "health_dir": status["keep_health"]["dir"],
             "search_enabled": True,
             "health_receipts_enabled": True,
+            "policy": keep_health_policy(),
         },
+        "capabilities_registry": "/os/capabilities",
         "mcp_tools": [
             "homestead.node_status",
             "homestead.os_status",
             "homestead.os_context",
+            "homestead.os_capabilities",
             "homestead.sync_keep_health",
+            "homestead.receipts_review",
             "homestead.list_recent_receipts",
             "homestead.read_receipt",
             "homestead.receipt_stats",
@@ -522,6 +698,11 @@ def os_context() -> dict[str, Any]:
     return os_context_payload()
 
 
+@app.get("/os/capabilities")
+def os_capabilities() -> dict[str, Any]:
+    return capability_registry_payload()
+
+
 @app.post("/keep/health/sync")
 def keep_health_sync(request: KeepHealthSyncRequest) -> dict[str, Any]:
     return sync_keep_health_summary(request.requesting_agent, request.note)
@@ -542,12 +723,30 @@ def receipts_by_date(date: str) -> dict[str, Any]:
     return {"date": safe_date, "count": len(summaries), "receipts": summaries}
 
 
+@app.get("/receipts/review")
+def receipts_review(limit: int = 20) -> dict[str, Any]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    summaries = sorted_receipt_summaries(all_receipt_json_files())
+    review_items = [receipt_review_item(summary) for summary in summaries if receipt_review_reasons(summary)]
+    limited = review_items[:limit]
+    return {
+        "generated_at": utc_now(),
+        "limit": limit,
+        "count": len(limited),
+        "total_attention_items": len(review_items),
+        "queue_empty": not review_items,
+        "receipts": limited,
+    }
+
+
 @app.get("/receipts/stats")
 def receipts_stats() -> dict[str, Any]:
     summaries = sorted_receipt_summaries(all_receipt_json_files())
     by_task: dict[str, int] = {}
     by_verdict: dict[str, int] = {}
     review_required = 0
+    attention_required = 0
     for summary in summaries:
         task = str(summary.get("task") or "unknown")
         verdict = str(summary.get("verdict") or "unknown")
@@ -555,11 +754,14 @@ def receipts_stats() -> dict[str, Any]:
         by_verdict[verdict] = by_verdict.get(verdict, 0) + 1
         if summary.get("review_required") is True:
             review_required += 1
+        if receipt_review_reasons(summary):
+            attention_required += 1
     return {
         "total": len(summaries),
         "by_task": by_task,
         "by_verdict": by_verdict,
         "review_required": review_required,
+        "attention_required": attention_required,
         "latest_timestamp": summaries[0].get("timestamp") if summaries else None,
     }
 

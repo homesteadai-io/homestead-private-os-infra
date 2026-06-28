@@ -274,6 +274,92 @@ def test_receipt_stats(monkeypatch, tmp_path):
     assert response.json()["by_verdict"]["ok"] == 1
     assert response.json()["by_verdict"]["error"] == 1
     assert response.json()["review_required"] == 1
+    assert response.json()["attention_required"] == 1
+
+
+def test_receipts_review_lists_attention_metadata_only(monkeypatch, tmp_path):
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "ok-run",
+        {
+            "requesting_agent": "pytest",
+            "task": "model_route",
+            "model_used": "model",
+            "files_read": [],
+            "actions_taken": [],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "ok",
+            "metadata": {"ok": True, "route": "/model/route"},
+        },
+        markdown="# OK\n\nprivate prompt should not appear in queue\n",
+    )
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "error-run",
+        {
+            "requesting_agent": "pytest",
+            "task": "model_route",
+            "model_used": "model",
+            "files_read": [],
+            "actions_taken": ["failed safely"],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "error",
+            "metadata": {
+                "ok": False,
+                "route": "/model/route",
+                "gateway": "direct",
+                "error_summary": "provider failed",
+            },
+        },
+        markdown="# Error\n\nfull failure context should not appear in queue\n",
+    )
+    write_test_receipt(
+        receipts,
+        "2026-06-27",
+        "manual-review",
+        {
+            "requesting_agent": "pytest",
+            "task": "manual",
+            "model_used": "not_applicable_v0",
+            "files_read": [],
+            "actions_taken": [],
+            "files_changed": [],
+            "review_required": True,
+            "verdict": "recorded",
+        },
+    )
+
+    response = client.get("/receipts/review?limit=10")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    assert body["total_attention_items"] == 2
+    assert body["queue_empty"] is False
+    assert [item["receipt_id"] for item in body["receipts"]] == ["error-run", "manual-review"]
+    assert body["receipts"][0]["attention"] == "review"
+    assert "verdict:error" in body["receipts"][0]["review_reasons"]
+    assert "metadata_ok:false" in body["receipts"][0]["review_reasons"]
+    assert "error_summary_present" in body["receipts"][0]["review_reasons"]
+    assert "review_required" in body["receipts"][1]["review_reasons"]
+    combined = json.dumps(body)
+    assert "private prompt" not in combined
+    assert "full failure context" not in combined
+
+
+def test_receipts_review_rejects_bad_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+
+    response = client.get("/receipts/review?limit=0")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "limit must be between 1 and 100"
 
 
 def test_node_status_reports_cloud_health_without_secrets(monkeypatch, tmp_path):
@@ -343,7 +429,49 @@ def test_os_context_is_cloud_first_with_local_disabled(monkeypatch, tmp_path):
     assert body["local_mode"]["enabled"] is False
     assert body["local_mode"]["activation"] == "manual_switch_only"
     assert "homestead.node_status" in body["mcp_tools"]
+    assert "homestead.os_capabilities" in body["mcp_tools"]
+    assert "homestead.receipts_review" in body["mcp_tools"]
     assert body["keep"]["health_receipts_enabled"] is True
+    assert body["keep"]["policy"]["source_control"] == "may_remain_dirty_until_separate_keep_sync_policy"
+
+
+def test_os_capabilities_registry_is_agent_safe_without_secrets(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("LITELLM_API_KEY", "super-secret-litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://litellm:4000")
+    monkeypatch.setenv("LITELLM_DEFAULT_MODEL", "haiku")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse-web:3000")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-secret")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-secret")
+    monkeypatch.setenv("MODEL_ROUTE_RECEIPTS_ENABLED", "true")
+
+    response = client.get("/os/capabilities")
+
+    assert response.status_code == 200
+    body = response.json()
+    entries = body["entries"]
+    assert body["cloud_first"] is True
+    assert body["production_default_gateway"] == "direct"
+    assert entries["model_route"]["enabled"] is True
+    assert entries["direct_openrouter_gateway"]["status"] == "production_default"
+    assert entries["litellm_gateway"]["status"] == "available_private_optional"
+    assert entries["review_queue"]["surface"] == ["/receipts/review", "homestead.receipts_review"]
+    assert entries["keep_health_sync"]["policy"]["content_policy"]["secret_values"] == "never_write"
+    assert entries["local_mode"]["enabled"] is False
+    assert entries["runner"]["enabled"] is False
+    assert entries["alerts"]["enabled"] is False
+    assert entries["dashboard"]["enabled"] is False
+    assert "super-secret" not in response.text
+    assert "pk-secret" not in response.text
+    assert "sk-secret" not in response.text
 
 
 def test_keep_health_sync_writes_metadata_only_to_keep(monkeypatch, tmp_path):

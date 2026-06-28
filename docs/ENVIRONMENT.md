@@ -130,6 +130,7 @@ Homestead exposes a cloud-first status surface:
 | `GET /node/status` | current node health, git, gateway, Langfuse, receipts, exposure assumptions, and capabilities |
 | `GET /os/status` | cloud OS status alias for node status |
 | `GET /os/context` | cloud-first OS context, MCP tools, Keep health folder, and local-mode readiness |
+| `GET /os/capabilities` | canonical capability registry for enabled, disabled, optional, and future-only surfaces |
 | `POST /keep/health/sync` | explicit metadata-only health summary sync into The Keep |
 
 `KEEP_HEALTH_DIR` is repo-relative under `HOMESTEAD_REPO_PATH`.
@@ -141,6 +142,49 @@ KEEP_HEALTH_DIR=System Receipts/Homestead Health
 ```
 
 The sync writes operational summaries only. It omits prompts, completions, headers, API keys, and raw env values. Local mode is represented as disabled until Adam explicitly chooses that release path.
+
+## Review Queue And Capability Map
+
+Homestead exposes a narrow attention surface for receipts that need review:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /receipts/review?limit=20` | receipt metadata summaries where `review_required=true`, `verdict` is not `ok`/`recorded`, `metadata.ok=false`, or `error_summary` is present |
+
+MCP tools:
+
+```text
+homestead.receipts_review
+homestead.os_capabilities
+```
+
+The review queue is read-only and metadata-only. It does not read or return receipt Markdown bodies, prompt content, response content, headers, API keys, raw env, or stack traces.
+
+The capability registry is read-only. It is the agent-facing answer to what Homestead can safely use now:
+
+```text
+cloud_node_status: active
+model_route: active, direct gateway remains production default
+litellm_gateway: available_private_optional, not default
+langfuse_tracing: optional_fail_open
+model_route_receipts: optional_fail_open
+receipt_index: active, read-only
+review_queue: active, read-only
+keep_health_sync: explicit_only
+local_mode: disabled
+runner: disabled
+alerts: disabled
+dashboard: disabled
+```
+
+Keep health folder policy:
+
+```text
+/System Receipts/Homestead Health is agent-readable operational memory.
+It may remain dirty/untracked until a separate Keep sync policy is chosen.
+Agents may read it for current node context.
+Agents must not auto-commit it, treat it as infra source, or write prompt/content/secrets into it.
+```
 
 ## Future Placeholders
 
