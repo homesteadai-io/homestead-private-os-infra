@@ -335,7 +335,80 @@ model
 finish_reason
 ```
 
-## 12. Private Exposure Check
+## 12. Optional Langfuse Tracing
+
+Tracing is optional and must not change `/model/route` behavior. Keep `/model/route` direct to OpenRouter and do not route through LiteLLM.
+
+Verify variable names without printing secret values:
+
+```bash
+grep -E '^(LANGFUSE_ENABLED|LANGFUSE_HOST|LANGFUSE_PUBLIC_KEY|LANGFUSE_SECRET_KEY|LANGFUSE_ENVIRONMENT|LANGFUSE_RELEASE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
+With tracing disabled:
+
+```bash
+LANGFUSE_ENABLED=false ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+Then from Adam's laptop:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"prompt":"Say hello from Homestead with tracing disabled.","max_tokens":80}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/model/route -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+200 response
+model/content/finish_reason present
+```
+
+With tracing enabled and real Langfuse keys present only in `/opt/homestead/secrets/runtime.env`:
+
+```bash
+cd /opt/homestead/runtime
+ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+Then from Adam's laptop:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"prompt":"Say hello from Homestead with Langfuse tracing enabled.","max_tokens":80}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/model/route -H "Content-Type: application/json" -H "x-homestead-surface: laptop-acceptance" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+200 response
+Langfuse trace appears in the private UI at http://<tailscale-ip>:3000
+trace metadata includes route=/model/route, requested_model, model_used, latency_ms, ok=true, token usage when returned
+prompt/content are not captured by default
+```
+
+Fail-open check:
+
+```bash
+cd /opt/homestead/runtime
+LANGFUSE_HOST=http://127.0.0.1:1 ENV_FILE=/opt/homestead/secrets/runtime.env bash infra/scripts/deploy.sh
+```
+
+Then call `/model/route` again. Expected:
+
+```text
+200 response from /model/route
+no secret values in response body
+```
+
+Restore the real private Langfuse host afterward and redeploy if tracing should remain enabled.
+
+## 13. Private Exposure Check
 
 From Adam's laptop, public `:8088` should fail:
 
@@ -383,7 +456,25 @@ Remove-Item -LiteralPath $tmp
 
 If the Tailscale commands time out and `Test-NetConnection <tailscale-ip> -Port 8088` shows the Wi-Fi interface instead of a Tailscale interface, the laptop is not connected to the Tailnet yet. Fix the client before changing server exposure.
 
-## 13. Reboot Survival
+Langfuse and MinIO public hardening should remain intact:
+
+```powershell
+curl.exe --max-time 10 http://<server-ip>:3000/
+curl.exe --max-time 10 http://<server-ip>:9090/minio/health/live
+curl.exe --max-time 10 http://<tailscale-ip>:3000/api/public/health
+curl.exe --max-time 10 http://<tailscale-ip>:4000/health
+```
+
+Expected:
+
+```text
+public :3000 fails
+public :9090 fails
+private Langfuse health succeeds
+LiteLLM over Tailscale fails
+```
+
+## 14. Reboot Survival
 
 Run only when brief server downtime is acceptable:
 

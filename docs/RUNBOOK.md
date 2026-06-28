@@ -5,7 +5,7 @@ This runbook deploys Homestead Private OS Infra v0 to the Hetzner CPX51 node.
 v0 is deployment-only:
 - no LiteLLM
 - no GPU provider
-- no Langfuse
+- no required Langfuse dependency; optional `/model/route` tracing is env-gated and fail-open
 - no SMTP/email
 - no autonomous runner
 
@@ -29,6 +29,7 @@ Tailscale host: homestead-cpx51
 Tailscale IP: 100.112.20.36
 Homestead HTTP: http://100.112.20.36:8088
 Homestead HTTPS bind: 100.112.20.36:8443
+Private Langfuse UI: http://100.112.20.36:3000
 ```
 
 ## Server Layout
@@ -172,12 +173,31 @@ CADDY_HTTP_BIND=0.0.0.0
 CADDY_HTTPS_BIND=0.0.0.0
 ```
 
-Set OpenRouter values only in local/server env files. Leave Langfuse and SMTP values as placeholders in v0.
+Set OpenRouter values only in local/server env files.
 
 Verify OpenRouter variable names without printing secret values:
 
 ```bash
 grep -E '^(OPENROUTER_API_KEY|OPENROUTER_BASE_URL|OPENROUTER_DEFAULT_MODEL|OPENROUTER_HTTP_REFERER|OPENROUTER_APP_TITLE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
+Optional Langfuse tracing for `/model/route` is disabled by default. When enabled, it must not change model behavior and must fail open if Langfuse is unavailable.
+
+```bash
+LANGFUSE_ENABLED=false
+LANGFUSE_HOST=http://100.112.20.36:3000
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_ENVIRONMENT=homestead-private-os
+LANGFUSE_RELEASE=v0-openrouter-route
+```
+
+Real Langfuse keys belong only in `/opt/homestead/secrets/runtime.env`.
+
+Verify Langfuse variable names without printing secret values:
+
+```bash
+grep -E '^(LANGFUSE_ENABLED|LANGFUSE_HOST|LANGFUSE_PUBLIC_KEY|LANGFUSE_SECRET_KEY|LANGFUSE_ENVIRONMENT|LANGFUSE_RELEASE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
 ```
 
 ## Preflight
