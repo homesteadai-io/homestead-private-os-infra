@@ -21,9 +21,11 @@ def test_tools_surface_lists_required_homestead_tools():
     assert "homestead.list_recent_receipts" in names
     assert "homestead.read_receipt" in names
     assert "homestead.receipt_stats" in names
+    assert "homestead.receipts_review" in names
     assert "homestead.node_status" in names
     assert "homestead.os_status" in names
     assert "homestead.os_context" in names
+    assert "homestead.os_capabilities" in names
     assert "homestead.sync_keep_health" in names
 
 
@@ -45,14 +47,17 @@ def test_receipt_tools_dispatch_to_api(monkeypatch):
         },
     )
     stats = client.post("/call", json={"tool": "homestead.receipt_stats", "arguments": {}})
+    review = client.post("/call", json={"tool": "homestead.receipts_review", "arguments": {"limit": 3}})
 
     assert recent.status_code == 200
     assert read.status_code == 200
     assert stats.status_code == 200
+    assert review.status_code == 200
     assert calls == [
         ("GET", "/receipts/recent?limit=5", None),
         ("GET", "/receipts/2026-06-28/model-route-test", None),
         ("GET", "/receipts/stats", None),
+        ("GET", "/receipts/review?limit=3", None),
     ]
 
 
@@ -68,6 +73,7 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
     node = client.post("/call", json={"tool": "homestead.node_status", "arguments": {}})
     os_status = client.post("/call", json={"tool": "homestead.os_status", "arguments": {}})
     os_context = client.post("/call", json={"tool": "homestead.os_context", "arguments": {}})
+    os_capabilities = client.post("/call", json={"tool": "homestead.os_capabilities", "arguments": {}})
     sync = client.post(
         "/call",
         json={
@@ -79,10 +85,12 @@ def test_status_and_keep_health_tools_dispatch_to_api(monkeypatch):
     assert node.status_code == 200
     assert os_status.status_code == 200
     assert os_context.status_code == 200
+    assert os_capabilities.status_code == 200
     assert sync.status_code == 200
     assert calls == [
         ("GET", "/node/status", None),
         ("GET", "/os/status", None),
         ("GET", "/os/context", None),
+        ("GET", "/os/capabilities", None),
         ("POST", "/keep/health/sync", {"requesting_agent": "pytest", "note": "sync"}),
     ]

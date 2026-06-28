@@ -371,6 +371,7 @@ Private status endpoints:
 curl http://<tailscale-ip>:8088/api/node/status
 curl http://<tailscale-ip>:8088/api/os/status
 curl http://<tailscale-ip>:8088/api/os/context
+curl http://<tailscale-ip>:8088/api/os/capabilities
 ```
 
 MCP tools:
@@ -379,6 +380,7 @@ MCP tools:
 homestead.node_status
 homestead.os_status
 homestead.os_context
+homestead.os_capabilities
 homestead.sync_keep_health
 ```
 
@@ -403,6 +405,86 @@ snapshots/<timestamp>.md
 ```
 
 These summaries omit prompt/content and secret values. Local mode should remain visible but disabled.
+
+## Review Queue And Capability Registry
+
+The receipt review queue is read-only and metadata-only. It is the operator attention surface for receipts that need Adam's review because they are explicitly marked for review, failed, or include safe error metadata.
+
+```powershell
+curl http://<tailscale-ip>:8088/api/receipts/review?limit=20
+```
+
+Expected fields:
+
+```text
+generated_at
+queue_empty
+total_attention_items
+receipts[].receipt_id
+receipts[].timestamp
+receipts[].task
+receipts[].requesting_agent
+receipts[].verdict
+receipts[].review_required
+receipts[].review_reasons
+receipts[].route
+receipts[].gateway
+receipts[].requested_model
+receipts[].model_used
+receipts[].latency_ms
+receipts[].error_summary
+receipts[].langfuse_trace_id
+```
+
+The list surface must not return receipt Markdown bodies, full prompt/content, headers, API keys, raw env values, or stack traces. Exact receipt reads remain available only through `/api/receipts/<YYYY-MM-DD>/<receipt-id>`.
+
+The capability registry is the canonical agent-readable map of what Homestead can safely use now:
+
+```powershell
+curl http://<tailscale-ip>:8088/api/os/capabilities
+```
+
+Expected status:
+
+```text
+cloud_node_status: active
+model_route: active
+direct_openrouter_gateway: production_default
+litellm_gateway: available_private_optional
+langfuse_tracing: optional_fail_open
+model_route_receipts: optional_fail_open
+receipt_index: active
+review_queue: active
+keep_health_sync: explicit_only
+local_mode: disabled
+runner: disabled
+alerts: disabled
+dashboard: disabled
+```
+
+MCP calls:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.receipts_review","arguments":{"limit":10}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.os_capabilities","arguments":{}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Keep health folder policy:
+
+```text
+/System Receipts/Homestead Health is agent-readable operational memory.
+It may remain dirty/untracked until a separate Keep sync policy exists.
+Do not auto-commit it.
+Do not treat it as infra source.
+Do not write prompt/content/secrets/raw env into it.
+```
 
 ## Always-On Runtime Check
 
