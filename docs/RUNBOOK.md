@@ -3,7 +3,7 @@
 This runbook deploys Homestead Private OS Infra v0 to the Hetzner CPX51 node.
 
 v0 is deployment-only:
-- no LiteLLM
+- no default LiteLLM dependency; `/model/route` defaults to direct OpenRouter
 - no GPU provider
 - no required Langfuse dependency; optional `/model/route` tracing is env-gated and fail-open
 - no SMTP/email
@@ -179,6 +179,42 @@ Verify OpenRouter variable names without printing secret values:
 
 ```bash
 grep -E '^(OPENROUTER_API_KEY|OPENROUTER_BASE_URL|OPENROUTER_DEFAULT_MODEL|OPENROUTER_HTTP_REFERER|OPENROUTER_APP_TITLE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
+Optional LiteLLM gateway support exists, but direct OpenRouter is the production default.
+
+```bash
+MODEL_GATEWAY=direct
+LITELLM_BASE_URL=http://litellm:4000
+LITELLM_API_KEY=
+LITELLM_DEFAULT_MODEL=haiku
+LITELLM_SEND_TEMPERATURE=false
+```
+
+Do not set `MODEL_GATEWAY=litellm` unless the deployment includes the optional private network overlay:
+
+```bash
+docker compose \
+  --env-file /opt/homestead/secrets/runtime.env \
+  -f infra/docker-compose.yml \
+  -f infra/docker-compose.litellm.yml \
+  up -d --build homestead-api homestead-mcp caddy
+```
+
+The overlay attaches `homestead-api` to the existing external Docker network `arlo-net`, where the inherited LiteLLM container is reachable as `http://litellm:4000`. Do not expose LiteLLM publicly or over Tailscale to make this work.
+
+When using the overlay, use the internal Langfuse host for Homestead tracing:
+
+```bash
+LANGFUSE_HOST=http://langfuse-web:3000
+```
+
+The Tailscale URL remains the operator UI path from Adam's laptop, but the API container should use Docker DNS.
+
+Verify LiteLLM variable names without printing values:
+
+```bash
+grep -E '^(MODEL_GATEWAY|LITELLM_BASE_URL|LITELLM_API_KEY|LITELLM_DEFAULT_MODEL|LITELLM_SEND_TEMPERATURE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
 ```
 
 Optional Langfuse tracing for `/model/route` is disabled by default. When enabled, it must not change model behavior and must fail open if Langfuse is unavailable.

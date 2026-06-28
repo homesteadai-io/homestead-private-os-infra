@@ -331,13 +331,95 @@ Expected:
 
 ```text
 content
+gateway=direct
 model
 finish_reason
 ```
 
-## 12. Optional Langfuse Tracing
+## 12. Optional LiteLLM Gateway Support
 
-Tracing is optional and must not change `/model/route` behavior. Keep `/model/route` direct to OpenRouter and do not route through LiteLLM.
+LiteLLM gateway support is optional and must stay disabled unless a private API-to-LiteLLM path exists. The production default is:
+
+```text
+MODEL_GATEWAY=direct
+```
+
+Verify variable names without printing secret values:
+
+```bash
+grep -E '^(MODEL_GATEWAY|LITELLM_BASE_URL|LITELLM_API_KEY|LITELLM_DEFAULT_MODEL|LITELLM_SEND_TEMPERATURE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
+Expected default live behavior:
+
+```text
+/model/route returns gateway=direct
+OpenRouter remains the serving path
+LiteLLM remains closed publicly and over Tailscale
+```
+
+Private container networking proof on Hetzner:
+
+```bash
+cd /opt/homestead/runtime
+docker network inspect arlo-net >/dev/null
+docker inspect litellm --format '{{json .NetworkSettings.Networks}}'
+```
+
+To deploy the optional private network overlay while keeping direct mode:
+
+```bash
+cd /opt/homestead/runtime
+docker compose \
+  --env-file /opt/homestead/secrets/runtime.env \
+  -f infra/docker-compose.yml \
+  -f infra/docker-compose.litellm.yml \
+  up -d --build homestead-api homestead-mcp caddy
+```
+
+Then prove the API container can reach LiteLLM privately:
+
+```bash
+HOMESTEAD_API="$(docker compose --env-file /opt/homestead/secrets/runtime.env -f infra/docker-compose.yml -f infra/docker-compose.litellm.yml ps -q homestead-api)"
+docker exec "$HOMESTEAD_API" python - <<'PY'
+import urllib.request
+urllib.request.urlopen("http://litellm:4000/health", timeout=10)
+print("litellm_private_health=ok")
+PY
+```
+
+Temporary live LiteLLM proof requires real `LITELLM_API_KEY` in `/opt/homestead/secrets/runtime.env`, never in git or chat:
+
+```text
+MODEL_GATEWAY=litellm
+LITELLM_BASE_URL=http://litellm:4000
+LITELLM_DEFAULT_MODEL=haiku
+LITELLM_SEND_TEMPERATURE=false
+LANGFUSE_HOST=http://langfuse-web:3000
+```
+
+After the proof, restore:
+
+```text
+MODEL_GATEWAY=direct
+```
+
+Unit tests should cover optional LiteLLM mode with mocked upstream behavior:
+
+```text
+direct mode remains default
+MODEL_GATEWAY=litellm uses /v1/chat/completions with LiteLLM bearer auth
+LiteLLM mode omits temperature by default
+LiteLLM mode can send temperature only when LITELLM_SEND_TEMPERATURE=true
+LiteLLM upstream failure does not silently fall back to OpenRouter
+no secrets or prompt content appear in error responses
+```
+
+Do not set `MODEL_GATEWAY=litellm` on the live Docker deployment until the network path is decided. The inherited LiteLLM bind is host loopback `127.0.0.1:4000`, which is not automatically reachable from inside the Homestead API container.
+
+## 13. Optional Langfuse Tracing
+
+Tracing is optional and must not change `/model/route` behavior. It traces the selected model gateway and remains fail-open.
 
 Verify variable names without printing secret values:
 
@@ -408,7 +490,7 @@ no secret values in response body
 
 Restore the real private Langfuse host afterward and redeploy if tracing should remain enabled.
 
-## 13. Optional Model Route Receipts
+## 14. Optional Model Route Receipts
 
 Model route receipts are optional, append-only, metadata-only by default, and fail-open.
 
@@ -463,7 +545,7 @@ Expected:
 200 response
 receipt_id and receipt_path present
 receipt Markdown and JSON exist under /opt/homestead/data/receipts/YYYY-MM-DD/
-receipt metadata includes route=/model/route, requested_model, model_used, latency_ms, ok=true, token usage when returned, and langfuse_trace_id when tracing succeeds
+receipt metadata includes route=/model/route, gateway, requested_model, model_used, latency_ms, ok=true, token usage when returned, and langfuse_trace_id when tracing succeeds
 receipt does not include full prompt or assistant content by default
 ```
 
@@ -484,7 +566,7 @@ no secret values or stack traces in response body
 
 Restore the real `RECEIPTS_DIR` and desired receipt setting afterward, then redeploy.
 
-## 14. Private Exposure Check
+## 15. Private Exposure Check
 
 From Adam's laptop, public `:8088` should fail:
 
@@ -550,7 +632,7 @@ private Langfuse health succeeds
 LiteLLM over Tailscale fails
 ```
 
-## 15. Receipt Read/Index Surface
+## 16. Receipt Read/Index Surface
 
 The receipt index is read-only. It should return metadata summaries for list endpoints and full receipt files only when a specific receipt is requested by date and id.
 

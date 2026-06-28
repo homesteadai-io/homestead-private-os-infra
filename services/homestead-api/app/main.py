@@ -148,7 +148,7 @@ class ModelRouteRequest(BaseModel):
     system: str | None = None
     model: str | None = None
     max_tokens: int = Field(default=256, ge=1, le=4096)
-    temperature: float = Field(default=0.2, ge=0, le=2)
+    temperature: float | None = Field(default=None, ge=0, le=2)
 
 
 def clean_run_id(value: str | None) -> str:
@@ -204,6 +204,7 @@ def receipt_summary(json_path: Path) -> dict[str, Any]:
         "verdict": data.get("verdict"),
         "review_required": data.get("review_required"),
         "route": metadata.get("route"),
+        "gateway": metadata.get("gateway"),
         "requested_model": metadata.get("requested_model"),
         "model_used": metadata.get("model_used") or data.get("model_used"),
         "latency_ms": metadata.get("latency_ms"),
@@ -411,6 +412,44 @@ def openrouter_config() -> dict[str, str]:
     return values
 
 
+def model_gateway() -> str:
+    gateway = os.getenv("MODEL_GATEWAY", "direct").strip().lower() or "direct"
+    if gateway not in {"direct", "litellm"}:
+        raise HTTPException(status_code=503, detail={"error": "Model gateway is not configured", "gateway": gateway})
+    return gateway
+
+
+def litellm_config() -> dict[str, str]:
+    api_key = normalize_api_key(os.getenv("LITELLM_API_KEY", ""))
+    values = {
+        "api_key": api_key,
+        "base_url": os.getenv("LITELLM_BASE_URL", "http://127.0.0.1:4000").strip(),
+        "default_model": os.getenv("LITELLM_DEFAULT_MODEL", "").strip(),
+    }
+    missing = [
+        name
+        for name, value in {
+            "LITELLM_API_KEY": values["api_key"],
+            "LITELLM_BASE_URL": values["base_url"],
+            "LITELLM_DEFAULT_MODEL": values["default_model"],
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise HTTPException(status_code=503, detail={"error": "LiteLLM is not configured", "missing": missing})
+    return values
+
+
+def resolved_temperature(request: ModelRouteRequest) -> float:
+    return 0.2 if request.temperature is None else request.temperature
+
+
+def litellm_should_send_temperature(request: ModelRouteRequest) -> bool:
+    if not env_flag("LITELLM_SEND_TEMPERATURE"):
+        return False
+    return request.temperature is not None
+
+
 def normalize_api_key(value: str) -> str:
     key = value.strip().strip("\"'")
     if "=" in key and key.split("=", 1)[0].strip() == "OPENROUTER_API_KEY":
@@ -466,6 +505,7 @@ def langfuse_usage(usage: Any) -> dict[str, Any] | None:
 
 async def send_langfuse_model_route_trace(
     *,
+    gateway: str,
     requested_model: str,
     model_used: str | None,
     latency_ms: int,
@@ -485,6 +525,7 @@ async def send_langfuse_model_route_trace(
     now = utc_now()
     metadata = {
         "route": "/model/route",
+        "gateway": gateway,
         "requested_model": requested_model,
         "model_used": model_used,
         "latency_ms": latency_ms,
@@ -499,17 +540,19 @@ async def send_langfuse_model_route_trace(
     generation_body: dict[str, Any] = {
         "id": generation_id,
         "traceId": trace_id,
-        "name": "homestead.model_route.openrouter",
+        "name": f"homestead.model_route.{gateway}",
         "startTime": now,
         "endTime": now,
         "model": model_used or requested_model,
         "metadata": metadata,
     }
-    if max_tokens is not None or temperature is not None:
-        generation_body["modelParameters"] = {
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
+    model_parameters: dict[str, Any] = {}
+    if max_tokens is not None:
+        model_parameters["max_tokens"] = max_tokens
+    if temperature is not None:
+        model_parameters["temperature"] = temperature
+    if model_parameters:
+        generation_body["modelParameters"] = model_parameters
     clean_usage = langfuse_usage(usage)
     if clean_usage:
         generation_body["usage"] = clean_usage
@@ -571,6 +614,7 @@ def receipt_usage(usage: Any) -> Any:
 
 def model_route_receipt_payload(
     *,
+    gateway: str,
     requesting_agent: str,
     requested_model: str,
     model_used: str | None,
@@ -585,6 +629,7 @@ def model_route_receipt_payload(
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "route": "/model/route",
+        "gateway": gateway,
         "requested_model": requested_model,
         "model_used": model_used,
         "latency_ms": latency_ms,
@@ -604,8 +649,9 @@ def model_route_receipt_payload(
             "response": content,
         }
 
+    route_description = "direct OpenRouter routing" if gateway == "direct" else "optional LiteLLM gateway routing"
     actions_taken = [
-        "called /model/route using direct OpenRouter routing",
+        f"called /model/route using {route_description}",
         "recorded model route metadata; prompt/content omitted by default",
     ]
     if langfuse_trace_id:
@@ -652,8 +698,28 @@ def requesting_surface(request: Request) -> str | None:
 
 @app.post("/model/route")
 async def model_route(request: ModelRouteRequest, http_request: Request) -> dict[str, Any]:
-    config = openrouter_config()
-    model = request.model or config["default_model"]
+    gateway = model_gateway()
+    if gateway == "direct":
+        config = openrouter_config()
+        model = request.model or config["default_model"]
+        headers = {
+            "Authorization": bearer_header(config["api_key"]),
+            "Content-Type": "application/json",
+            "HTTP-Referer": config["http_referer"],
+            "X-OpenRouter-Title": config["app_title"],
+        }
+        url = f"{config['base_url'].rstrip('/')}/chat/completions"
+        upstream_name = "OpenRouter"
+    else:
+        config = litellm_config()
+        model = request.model or config["default_model"]
+        headers = {
+            "Authorization": bearer_header(config["api_key"]),
+            "Content-Type": "application/json",
+        }
+        url = f"{config['base_url'].rstrip('/')}/v1/chat/completions"
+        upstream_name = "LiteLLM"
+
     messages: list[dict[str, str]] = []
     if request.system:
         messages.append({"role": "system", "content": request.system})
@@ -663,15 +729,12 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
         "model": model,
         "messages": messages,
         "max_tokens": request.max_tokens,
-        "temperature": request.temperature,
     }
-    headers = {
-        "Authorization": bearer_header(config["api_key"]),
-        "Content-Type": "application/json",
-        "HTTP-Referer": config["http_referer"],
-        "X-OpenRouter-Title": config["app_title"],
-    }
-    url = f"{config['base_url'].rstrip('/')}/chat/completions"
+    if gateway == "direct":
+        payload["temperature"] = resolved_temperature(request)
+    elif litellm_should_send_temperature(request):
+        payload["temperature"] = request.temperature
+    trace_temperature = payload.get("temperature")
 
     started = time.perf_counter()
     try:
@@ -680,60 +743,66 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
     except httpx.TimeoutException as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
         surface = requesting_surface(http_request)
+        error_message = f"{upstream_name} request timed out"
         trace_id = await send_langfuse_model_route_trace(
+            gateway=gateway,
             requested_model=model,
             model_used=None,
             latency_ms=latency_ms,
             ok=False,
-            error="OpenRouter request timed out",
+            error=error_message,
             requesting_surface=surface,
             max_tokens=request.max_tokens,
-            temperature=request.temperature,
+            temperature=trace_temperature,
         )
         await record_model_route_receipt(
             model_route_receipt_payload(
+                gateway=gateway,
                 requesting_agent=surface or "unknown",
                 requested_model=model,
                 model_used=None,
                 latency_ms=latency_ms,
                 ok=False,
-                error_summary="OpenRouter request timed out",
+                error_summary=error_message,
                 langfuse_trace_id=trace_id,
                 prompt=request.prompt,
                 system=request.system,
             )
         )
-        raise HTTPException(status_code=504, detail="OpenRouter request timed out") from exc
+        raise HTTPException(status_code=504, detail=error_message) from exc
     except httpx.RequestError as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
         surface = requesting_surface(http_request)
+        error_message = f"{upstream_name} request failed"
         trace_id = await send_langfuse_model_route_trace(
+            gateway=gateway,
             requested_model=model,
             model_used=None,
             latency_ms=latency_ms,
             ok=False,
-            error="OpenRouter request failed",
+            error=error_message,
             requesting_surface=surface,
             max_tokens=request.max_tokens,
-            temperature=request.temperature,
+            temperature=trace_temperature,
         )
         await record_model_route_receipt(
             model_route_receipt_payload(
+                gateway=gateway,
                 requesting_agent=surface or "unknown",
                 requested_model=model,
                 model_used=None,
                 latency_ms=latency_ms,
                 ok=False,
-                error_summary="OpenRouter request failed",
+                error_summary=error_message,
                 langfuse_trace_id=trace_id,
                 prompt=request.prompt,
                 system=request.system,
             )
         )
-        raise HTTPException(status_code=502, detail="OpenRouter request failed") from exc
+        raise HTTPException(status_code=502, detail=error_message) from exc
 
     if response.status_code >= 400:
-        message = "OpenRouter returned an error"
+        message = f"{upstream_name} returned an error"
         try:
             body = response.json()
             if isinstance(body, dict):
@@ -745,6 +814,7 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
         latency_ms = int((time.perf_counter() - started) * 1000)
         surface = requesting_surface(http_request)
         trace_id = await send_langfuse_model_route_trace(
+            gateway=gateway,
             requested_model=model,
             model_used=None,
             latency_ms=latency_ms,
@@ -752,10 +822,11 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
             error=message,
             requesting_surface=surface,
             max_tokens=request.max_tokens,
-            temperature=request.temperature,
+            temperature=trace_temperature,
         )
         await record_model_route_receipt(
             model_route_receipt_payload(
+                gateway=gateway,
                 requesting_agent=surface or "unknown",
                 requested_model=model,
                 model_used=None,
@@ -772,23 +843,24 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
     try:
         data = response.json()
     except ValueError as exc:
-        raise HTTPException(status_code=502, detail="OpenRouter returned invalid JSON") from exc
+        raise HTTPException(status_code=502, detail=f"{upstream_name} returned invalid JSON") from exc
 
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise HTTPException(status_code=502, detail="OpenRouter returned no choices")
+        raise HTTPException(status_code=502, detail=f"{upstream_name} returned no choices")
     first = choices[0]
     if not isinstance(first, dict):
-        raise HTTPException(status_code=502, detail="OpenRouter returned an invalid choice")
+        raise HTTPException(status_code=502, detail=f"{upstream_name} returned an invalid choice")
     message = first.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str):
-        raise HTTPException(status_code=502, detail="OpenRouter returned no assistant content")
+        raise HTTPException(status_code=502, detail=f"{upstream_name} returned no assistant content")
 
     model_used = data.get("model") or model
     latency_ms = int((time.perf_counter() - started) * 1000)
     surface = requesting_surface(http_request)
     trace_id = await send_langfuse_model_route_trace(
+        gateway=gateway,
         requested_model=model,
         model_used=model_used,
         latency_ms=latency_ms,
@@ -796,10 +868,11 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
         usage=data.get("usage"),
         requesting_surface=surface,
         max_tokens=request.max_tokens,
-        temperature=request.temperature,
+        temperature=trace_temperature,
     )
 
     result = {
+        "gateway": gateway,
         "model": model_used,
         "content": content,
         "finish_reason": first.get("finish_reason"),
@@ -807,6 +880,7 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
     }
     receipt_result = await record_model_route_receipt(
         model_route_receipt_payload(
+            gateway=gateway,
             requesting_agent=surface or "unknown",
             requested_model=model,
             model_used=model_used,

@@ -27,6 +27,11 @@ def clear_langfuse_env(monkeypatch):
         "LANGFUSE_RELEASE",
         "MODEL_ROUTE_RECEIPTS_ENABLED",
         "MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT",
+        "MODEL_GATEWAY",
+        "LITELLM_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_DEFAULT_MODEL",
+        "LITELLM_SEND_TEMPERATURE",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -126,6 +131,7 @@ def test_receipts_recent_lists_metadata_only(monkeypatch, tmp_path):
             "verdict": "ok",
             "metadata": {
                 "route": "/model/route",
+                "gateway": "direct",
                 "requested_model": "openai/gpt-4.1-mini",
                 "model_used": "openai/gpt-4.1-mini-2025-04-14",
                 "latency_ms": 123,
@@ -160,6 +166,7 @@ def test_receipts_recent_lists_metadata_only(monkeypatch, tmp_path):
     first = body["receipts"][0]
     assert first["receipt_id"] == "model-route-new"
     assert first["route"] == "/model/route"
+    assert first["gateway"] == "direct"
     assert first["requested_model"] == "openai/gpt-4.1-mini"
     assert first["latency_ms"] == 123
     assert first["usage"]["total_tokens"] == 9
@@ -324,6 +331,7 @@ def test_model_route_calls_openrouter_with_expected_headers(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.json()["gateway"] == "direct"
     assert response.json()["content"] == "Hello from Homestead."
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
@@ -332,6 +340,137 @@ def test_model_route_calls_openrouter_with_expected_headers(monkeypatch):
     assert captured["json"]["model"] == "openai/gpt-4.1-mini"
     assert captured["json"]["messages"] == [{"role": "user", "content": "Say hello."}]
     assert captured["json"]["max_tokens"] == 80
+    assert captured["json"]["temperature"] == 0.1
+
+
+def test_model_route_rejects_unknown_gateway(monkeypatch):
+    monkeypatch.setenv("MODEL_GATEWAY", "space-laser")
+
+    response = client.post("/model/route", json={"prompt": "hello"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "Model gateway is not configured"
+    assert response.json()["detail"]["gateway"] == "space-laser"
+
+
+def test_model_route_litellm_uses_config_and_omits_temperature_by_default(monkeypatch):
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={
+                    "model": "haiku",
+                    "choices": [{"message": {"content": "ok from litellm"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                },
+            )
+
+    monkeypatch.setenv("MODEL_GATEWAY", "litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-secret")
+    monkeypatch.setenv("LITELLM_DEFAULT_MODEL", "haiku")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "hello", "temperature": 0.1})
+
+    assert response.status_code == 200
+    assert response.json()["gateway"] == "litellm"
+    assert response.json()["content"] == "ok from litellm"
+    assert captured["url"] == "http://127.0.0.1:4000/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer litellm-secret"
+    assert "HTTP-Referer" not in captured["headers"]
+    assert "X-OpenRouter-Title" not in captured["headers"]
+    assert captured["json"]["model"] == "haiku"
+    assert captured["json"]["max_tokens"] == 256
+    assert "temperature" not in captured["json"]
+
+
+def test_model_route_litellm_can_send_temperature_when_enabled(monkeypatch):
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["json"] = json
+            return httpx.Response(
+                200,
+                json={
+                    "model": "aux",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+
+    monkeypatch.setenv("MODEL_GATEWAY", "litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-secret")
+    monkeypatch.setenv("LITELLM_DEFAULT_MODEL", "aux")
+    monkeypatch.setenv("LITELLM_SEND_TEMPERATURE", "true")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "hello", "temperature": 0.7})
+
+    assert response.status_code == 200
+    assert captured["json"]["temperature"] == 0.7
+
+
+def test_model_route_litellm_failure_does_not_fallback_to_openrouter(monkeypatch):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers, json):
+            calls.append(url)
+            return httpx.Response(500, json={"error": {"message": "litellm upstream failed"}})
+
+    monkeypatch.setenv("MODEL_GATEWAY", "litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-secret")
+    monkeypatch.setenv("LITELLM_DEFAULT_MODEL", "haiku")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "do not leak prompt"})
+
+    assert response.status_code == 502
+    assert calls == ["http://127.0.0.1:4000/v1/chat/completions"]
+    assert response.json()["detail"]["error"] == "litellm upstream failed"
+    assert "openrouter-secret" not in response.text
+    assert "litellm-secret" not in response.text
+    assert "do not leak prompt" not in response.text
 
 
 def test_model_route_tracing_enabled_posts_langfuse_without_prompt(monkeypatch):

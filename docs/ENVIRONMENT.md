@@ -59,9 +59,41 @@ These power `/model/route` through OpenRouter. Keep real values only in local/se
 | `OPENROUTER_HTTP_REFERER` | value sent in the `HTTP-Referer` attribution header |
 | `OPENROUTER_APP_TITLE` | value sent in the `X-OpenRouter-Title` attribution header |
 
+## Optional Model Gateway
+
+`/model/route` defaults to direct OpenRouter routing. LiteLLM support is optional and env-gated; do not enable it in production until Homestead has a private container-to-LiteLLM network path.
+
+The inherited LiteLLM service currently binds on the Hetzner host at `127.0.0.1:4000`. From inside the Homestead API container, `127.0.0.1` means the API container itself, not the host. Keep `MODEL_GATEWAY=direct` unless a private server-side path is deliberately added without public or Tailscale exposure.
+
+| Variable | Purpose |
+|---|---|
+| `MODEL_GATEWAY` | `direct` or `litellm`; default `direct` |
+| `LITELLM_BASE_URL` | OpenAI-compatible LiteLLM base URL. Use `http://litellm:4000` only with the private `infra/docker-compose.litellm.yml` network overlay. |
+| `LITELLM_API_KEY` | LiteLLM bearer token; real value belongs only in local/server env files |
+| `LITELLM_DEFAULT_MODEL` | default LiteLLM alias, for example `haiku` |
+| `LITELLM_SEND_TEMPERATURE` | set `true` only when the selected aliases support temperature overrides; default `false` |
+
+When `MODEL_GATEWAY=litellm`, Homestead does not silently fall back to OpenRouter. A LiteLLM failure returns a safe model-route error so operators know the selected gateway is broken.
+
+The optional private network overlay is:
+
+```text
+infra/docker-compose.litellm.yml
+```
+
+It attaches `homestead-api` to the existing external Docker network `arlo-net` so the API container can reach the inherited LiteLLM container at `http://litellm:4000` without publishing LiteLLM publicly or over Tailscale.
+
+When this overlay is active, Homestead can also reach the inherited Langfuse web container privately at:
+
+```text
+LANGFUSE_HOST=http://langfuse-web:3000
+```
+
+This is preferable inside the API container to the Tailscale UI address.
+
 ## Optional Langfuse Tracing
 
-These optionally trace `/model/route` while keeping the serving path direct to OpenRouter. Tracing is disabled by default and must fail open: if Langfuse is missing, unavailable, or rejects auth, `/model/route` should still return the OpenRouter response.
+These optionally trace `/model/route` while keeping the serving path on the selected model gateway. Tracing is disabled by default and must fail open: if Langfuse is missing, unavailable, or rejects auth, `/model/route` should still return the model response.
 
 Keep real keys only in local/server env files. Commit placeholders only.
 
