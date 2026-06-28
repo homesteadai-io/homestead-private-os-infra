@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
@@ -13,6 +14,19 @@ from app.main import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def clear_langfuse_env(monkeypatch):
+    for name in [
+        "LANGFUSE_ENABLED",
+        "LANGFUSE_HOST",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_ENVIRONMENT",
+        "LANGFUSE_RELEASE",
+    ]:
+        monkeypatch.delenv(name, raising=False)
 
 
 def init_repo(path: Path) -> None:
@@ -152,6 +166,153 @@ def test_model_route_calls_openrouter_with_expected_headers(monkeypatch):
     assert captured["json"]["model"] == "openai/gpt-4.1-mini"
     assert captured["json"]["messages"] == [{"role": "user", "content": "Say hello."}]
     assert captured["json"]["max_tokens"] == 80
+
+
+def test_model_route_tracing_enabled_posts_langfuse_without_prompt(monkeypatch):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, auth=None):
+            calls.append({"url": url, "headers": headers, "json": json, "auth": auth})
+            if url.endswith("/chat/completions"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "openai/gpt-4.1-mini",
+                        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                    },
+                )
+            return httpx.Response(207, json={"successes": [{"id": "trace"}], "errors": []})
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://100.112.20.36:3000")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("LANGFUSE_ENVIRONMENT", "homestead-private-os")
+    monkeypatch.setenv("LANGFUSE_RELEASE", "v0-openrouter-route")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        "/model/route",
+        json={"prompt": "private prompt should not be traced", "max_tokens": 80},
+        headers={"x-homestead-surface": "pytest"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "ok"
+    assert len(calls) == 2
+    trace_call = calls[1]
+    assert trace_call["url"] == "http://100.112.20.36:3000/api/public/ingestion"
+    assert trace_call["auth"] == ("pk-test", "sk-test")
+    batch = trace_call["json"]["batch"]
+    assert [item["type"] for item in batch] == ["trace-create", "generation-create"]
+    metadata = batch[0]["body"]["metadata"]
+    assert metadata["route"] == "/model/route"
+    assert metadata["requested_model"] == "openai/gpt-4.1-mini"
+    assert metadata["model_used"] == "openai/gpt-4.1-mini"
+    assert metadata["ok"] is True
+    assert metadata["requesting_surface"] == "pytest"
+    assert "private prompt" not in json.dumps(trace_call["json"])
+    assert "content" not in batch[1]["body"]
+
+
+def test_model_route_tracing_failure_is_fail_open(monkeypatch):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, auth=None):
+            calls.append(url)
+            if url.endswith("/chat/completions"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "openai/gpt-4.1-mini",
+                        "choices": [{"message": {"content": "still works"}, "finish_reason": "stop"}],
+                    },
+                )
+            raise httpx.ConnectError("langfuse unavailable")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://100.112.20.36:3000")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "hello"})
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "still works"
+    assert calls == [
+        "https://openrouter.ai/api/v1/chat/completions",
+        "http://100.112.20.36:3000/api/public/ingestion",
+    ]
+
+
+def test_model_route_errors_do_not_leak_secrets_or_prompt(monkeypatch):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None, auth=None):
+            if url.endswith("/chat/completions"):
+                return httpx.Response(500, json={"error": {"message": "provider failed"}})
+            raise AssertionError("Langfuse should not change the error response")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://100.112.20.36:3000")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-secret")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-secret")
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = client.post("/model/route", json={"prompt": "do not leak this prompt"})
+
+    assert response.status_code == 502
+    body = response.text
+    assert "super-secret-openrouter" not in body
+    assert "pk-secret" not in body
+    assert "sk-secret" not in body
+    assert "do not leak this prompt" not in body
+    assert "provider failed" in body
 
 
 def test_model_route_does_not_double_prefix_bearer(monkeypatch):

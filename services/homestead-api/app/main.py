@@ -4,13 +4,14 @@ import json
 import os
 import re
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 
@@ -279,8 +280,135 @@ def bearer_header(api_key: str) -> str:
     return f"Bearer {api_key}"
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def langfuse_config() -> dict[str, str] | None:
+    if not env_flag("LANGFUSE_ENABLED"):
+        return None
+
+    values = {
+        "host": os.getenv("LANGFUSE_HOST", "").strip().rstrip("/"),
+        "public_key": os.getenv("LANGFUSE_PUBLIC_KEY", "").strip(),
+        "secret_key": os.getenv("LANGFUSE_SECRET_KEY", "").strip(),
+        "environment": os.getenv("LANGFUSE_ENVIRONMENT", "homestead-private-os").strip(),
+        "release": os.getenv("LANGFUSE_RELEASE", "v0-openrouter-route").strip(),
+    }
+    if not values["host"] or not values["public_key"] or not values["secret_key"]:
+        return None
+    return values
+
+
+def langfuse_usage(usage: Any) -> dict[str, Any] | None:
+    if not isinstance(usage, dict):
+        return None
+
+    allowed = {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "prompt_tokens_details",
+        "completion_tokens_details",
+    }
+    clean = {key: value for key, value in usage.items() if key in allowed}
+    return clean or None
+
+
+async def send_langfuse_model_route_trace(
+    *,
+    requested_model: str,
+    model_used: str | None,
+    latency_ms: int,
+    ok: bool,
+    usage: Any = None,
+    error: str | None = None,
+    requesting_surface: str | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> None:
+    config = langfuse_config()
+    if not config:
+        return
+
+    trace_id = uuid4().hex
+    generation_id = uuid4().hex
+    now = utc_now()
+    metadata = {
+        "route": "/model/route",
+        "requested_model": requested_model,
+        "model_used": model_used,
+        "latency_ms": latency_ms,
+        "ok": ok,
+        "environment": config["environment"],
+    }
+    if error:
+        metadata["error"] = error
+    if requesting_surface:
+        metadata["requesting_surface"] = requesting_surface[:120]
+
+    generation_body: dict[str, Any] = {
+        "id": generation_id,
+        "traceId": trace_id,
+        "name": "homestead.model_route.openrouter",
+        "startTime": now,
+        "endTime": now,
+        "model": model_used or requested_model,
+        "metadata": metadata,
+    }
+    if max_tokens is not None or temperature is not None:
+        generation_body["modelParameters"] = {
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+    clean_usage = langfuse_usage(usage)
+    if clean_usage:
+        generation_body["usage"] = clean_usage
+
+    payload = {
+        "batch": [
+            {
+                "id": uuid4().hex,
+                "type": "trace-create",
+                "timestamp": now,
+                "body": {
+                    "id": trace_id,
+                    "name": "homestead.model_route",
+                    "release": config["release"],
+                    "metadata": metadata,
+                    "tags": ["homestead", "model-route", config["environment"]],
+                },
+            },
+            {
+                "id": uuid4().hex,
+                "type": "generation-create",
+                "timestamp": now,
+                "body": generation_body,
+            },
+        ]
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            response = await client.post(
+                f"{config['host']}/api/public/ingestion",
+                auth=(config["public_key"], config["secret_key"]),
+                json=payload,
+            )
+            response.raise_for_status()
+    except Exception:
+        return
+
+
+def requesting_surface(request: Request) -> str | None:
+    return request.headers.get("x-homestead-surface") or request.headers.get("user-agent")
+
+
 @app.post("/model/route")
-async def model_route(request: ModelRouteRequest) -> dict[str, Any]:
+async def model_route(request: ModelRouteRequest, http_request: Request) -> dict[str, Any]:
     config = openrouter_config()
     model = request.model or config["default_model"]
     messages: list[dict[str, str]] = []
@@ -302,12 +430,33 @@ async def model_route(request: ModelRouteRequest) -> dict[str, Any]:
     }
     url = f"{config['base_url'].rstrip('/')}/chat/completions"
 
+    started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(url, headers=headers, json=payload)
     except httpx.TimeoutException as exc:
+        await send_langfuse_model_route_trace(
+            requested_model=model,
+            model_used=None,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            ok=False,
+            error="OpenRouter request timed out",
+            requesting_surface=requesting_surface(http_request),
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
         raise HTTPException(status_code=504, detail="OpenRouter request timed out") from exc
     except httpx.RequestError as exc:
+        await send_langfuse_model_route_trace(
+            requested_model=model,
+            model_used=None,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            ok=False,
+            error="OpenRouter request failed",
+            requesting_surface=requesting_surface(http_request),
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
         raise HTTPException(status_code=502, detail="OpenRouter request failed") from exc
 
     if response.status_code >= 400:
@@ -320,6 +469,16 @@ async def model_route(request: ModelRouteRequest) -> dict[str, Any]:
                     message = error["message"]
         except ValueError:
             pass
+        await send_langfuse_model_route_trace(
+            requested_model=model,
+            model_used=None,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            ok=False,
+            error=message,
+            requesting_surface=requesting_surface(http_request),
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
         raise HTTPException(status_code=502, detail={"error": message, "upstream_status": response.status_code})
 
     try:
@@ -338,8 +497,20 @@ async def model_route(request: ModelRouteRequest) -> dict[str, Any]:
     if not isinstance(content, str):
         raise HTTPException(status_code=502, detail="OpenRouter returned no assistant content")
 
+    model_used = data.get("model") or model
+    await send_langfuse_model_route_trace(
+        requested_model=model,
+        model_used=model_used,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        ok=True,
+        usage=data.get("usage"),
+        requesting_surface=requesting_surface(http_request),
+        max_tokens=request.max_tokens,
+        temperature=request.temperature,
+    )
+
     return {
-        "model": data.get("model") or model,
+        "model": model_used,
         "content": content,
         "finish_reason": first.get("finish_reason"),
         "usage": data.get("usage"),

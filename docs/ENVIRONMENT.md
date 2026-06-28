@@ -59,15 +59,29 @@ These power `/model/route` through OpenRouter. Keep real values only in local/se
 | `OPENROUTER_HTTP_REFERER` | value sent in the `HTTP-Referer` attribution header |
 | `OPENROUTER_APP_TITLE` | value sent in the `X-OpenRouter-Title` attribution header |
 
+## Optional Langfuse Tracing
+
+These optionally trace `/model/route` while keeping the serving path direct to OpenRouter. Tracing is disabled by default and must fail open: if Langfuse is missing, unavailable, or rejects auth, `/model/route` should still return the OpenRouter response.
+
+Keep real keys only in local/server env files. Commit placeholders only.
+
+| Variable | Purpose |
+|---|---|
+| `LANGFUSE_ENABLED` | set to `true` to emit `/model/route` traces; default `false` |
+| `LANGFUSE_HOST` | private Langfuse URL, for example `http://100.112.20.36:3000` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse project public key |
+| `LANGFUSE_SECRET_KEY` | Langfuse project secret key |
+| `LANGFUSE_ENVIRONMENT` | trace environment label, default `homestead-private-os` |
+| `LANGFUSE_RELEASE` | trace release label, default `v0-openrouter-route` |
+
+Trace metadata includes route, requested model, model used, latency, ok/error, token usage when returned, and requesting surface when available. Prompt and response content are not sent by default.
+
 ## Future Placeholders
 
 Present for planning, not used by v0:
 
 | Variable | Task |
 |---|---|
-| `LANGFUSE_PUBLIC_KEY` | Task 4 tracing |
-| `LANGFUSE_SECRET_KEY` | Task 4 tracing |
-| `LANGFUSE_HOST` | Task 4 tracing |
 | `SMTP_HOST` | Task 5 email alerts |
 | `SMTP_PORT` | Task 5 email alerts |
 | `SMTP_USER` | Task 5 email alerts |
