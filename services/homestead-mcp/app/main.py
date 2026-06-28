@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 
 
 app = FastAPI(title="Homestead MCP Facade", version="0.1.0")
+PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 TOOLS = [
     {
@@ -83,6 +86,21 @@ TOOLS = [
         "name": "homestead.os_capabilities",
         "description": "Return Homestead capability registry with enabled, disabled, and future-only surfaces.",
         "input_schema": {},
+    },
+    {
+        "name": "homestead.agent_boot",
+        "description": "Return the standard Homestead agent boot orientation and current operating context.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.projects",
+        "description": "List config-backed Homestead project summaries.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.project_context",
+        "description": "Return one Homestead project context by project id.",
+        "input_schema": {"project_id": "string"},
     },
     {
         "name": "homestead.ops_policy",
@@ -216,6 +234,18 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         return await api_request("GET", "/os/context")
     if tool == "homestead.os_capabilities":
         return await api_request("GET", "/os/capabilities")
+    if tool == "homestead.agent_boot":
+        return await api_request("GET", "/agent/boot")
+    if tool == "homestead.projects":
+        return await api_request("GET", "/os/projects")
+    if tool == "homestead.project_context":
+        project_id = arguments.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            raise HTTPException(status_code=400, detail="project_id is required")
+        normalized_project_id = project_id.strip().lower()
+        if not PROJECT_ID_RE.fullmatch(normalized_project_id):
+            raise HTTPException(status_code=400, detail="project_id must be a slug")
+        return await api_request("GET", f"/os/projects/{quote(normalized_project_id, safe='')}")
     if tool == "homestead.ops_policy":
         return await api_request("GET", "/ops/policy")
     if tool == "homestead.check_ops_policy":

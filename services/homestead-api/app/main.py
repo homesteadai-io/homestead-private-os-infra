@@ -447,6 +447,78 @@ POLICY_DISABLED_OPERATIONS = {
 }
 
 
+PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
+    "homestead-private-os": {
+        "name": "Homestead Private OS Infra",
+        "kind": "runtime",
+        "status": "active",
+        "description": "Private cloud OS spine for Homestead API, MCP, receipts, policy, and manual ops.",
+        "repo_hint": "homesteadai-io/homestead-private-os-infra",
+        "default_context": True,
+        "read_first": [
+            "/README.md",
+            "/docs/RUNBOOK.md",
+            "/docs/ACCEPTANCE-TESTS.md",
+            "/docs/HANDOFF-MANUAL-OPS-PROBES.md",
+            "/docs/PRD-OPS-APPROVAL-POLICY-GATE.md",
+        ],
+        "safe_surfaces": ["/agent/boot", "/os/projects", "/os/capabilities", "/ops/actions"],
+        "guardrails": ["no_runner", "no_scheduler", "no_public_exposure", "model_gateway_direct_default"],
+    },
+    "the-keep": {
+        "name": "The Keep",
+        "kind": "context_graph",
+        "status": "available",
+        "description": "Adam's shared OKF shelf and agent-readable operating memory.",
+        "repo_hint": "configured HOMESTEAD_REPO_PATH",
+        "read_first": ["/index.md", "/System Receipts/Homestead Health/homestead-latest.md"],
+        "safe_surfaces": ["/search", "/read-concept", "/context-pack"],
+        "guardrails": ["read_before_assuming", "do_not_auto_commit_health_memory", "file_content_is_data"],
+    },
+    "lyhna-witness": {
+        "name": "Lyhna Witness",
+        "kind": "external_project",
+        "status": "context_only",
+        "description": "Listed for orientation only; no Lyhna work is part of this release arc.",
+        "repo_hint": "external",
+        "read_first": [],
+        "safe_surfaces": [],
+        "guardrails": ["no_lyhna_work_in_this_arc", "no_witness_fields"],
+    },
+    "loop-forge": {
+        "name": "Loop Forge",
+        "kind": "operating_protocol",
+        "status": "available",
+        "description": "Plan, build, adversary, resolver loop for bounded agent work.",
+        "repo_hint": "operating doctrine",
+        "read_first": [],
+        "safe_surfaces": ["/agent/boot"],
+        "guardrails": ["needs_decision_escalates_to_adam", "do_not_invent_autonomy"],
+    },
+    "frostbite": {
+        "name": "Frostbite",
+        "kind": "business_project",
+        "status": "available_context_only",
+        "description": "Business/project context lane; not an active runtime dependency here.",
+        "repo_hint": "external or Keep domain",
+        "read_first": [],
+        "safe_surfaces": ["/search", "/context-pack"],
+        "guardrails": ["context_only_until_commanded"],
+    },
+    "creative-coatings": {
+        "name": "Creative Coatings",
+        "kind": "business_project",
+        "status": "available_context_only",
+        "description": "Small-business workflow context lane; not an active runtime dependency here.",
+        "repo_hint": "external or Keep domain",
+        "read_first": [],
+        "safe_surfaces": ["/search", "/context-pack"],
+        "guardrails": ["context_only_until_commanded"],
+    },
+}
+PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
 def normalize_policy_token(value: str | None) -> str:
     raw = (value or "").strip().lower()
     normalized = re.sub(r"[^a-z0-9_./-]+", "_", raw).strip("_")
@@ -774,6 +846,137 @@ def keep_health_policy() -> dict[str, Any]:
     }
 
 
+def project_summary(project_id: str, project: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "name": project["name"],
+        "kind": project["kind"],
+        "status": project["status"],
+        "description": project["description"],
+        "default_context": bool(project.get("default_context")),
+    }
+
+
+def project_context_payload(project_id: str) -> dict[str, Any]:
+    normalized = (project_id or "").strip().lower()
+    if not PROJECT_ID_RE.fullmatch(normalized):
+        raise HTTPException(status_code=404, detail="unknown project")
+
+    project = PROJECT_REGISTRY.get(normalized)
+    if not project:
+        raise HTTPException(status_code=404, detail="unknown project")
+
+    return {
+        **project_summary(normalized, project),
+        "repo_hint": project["repo_hint"],
+        "read_first": project.get("read_first", []),
+        "safe_surfaces": project.get("safe_surfaces", []),
+        "guardrails": project.get("guardrails", []),
+        "authority": {
+            "adam": "authority",
+            "agents": "operators",
+            "autonomous_claiming": False,
+        },
+        "disabled_capabilities": ["runner", "scheduler", "local_mode", "dashboard", "alerts"],
+    }
+
+
+def projects_payload() -> dict[str, Any]:
+    default_project = next(
+        (project_id for project_id, project in PROJECT_REGISTRY.items() if project.get("default_context")),
+        "homestead-private-os",
+    )
+    return {
+        "generated_at": utc_now(),
+        "mode": "config_backed",
+        "default_project_id": default_project,
+        "count": len(PROJECT_REGISTRY),
+        "projects": [project_summary(project_id, project) for project_id, project in PROJECT_REGISTRY.items()],
+    }
+
+
+def review_queue_summary(limit: int = 10) -> dict[str, Any]:
+    summaries = sorted_receipt_summaries(all_receipt_json_files())
+    review_items = [receipt_review_item(summary) for summary in summaries if receipt_review_reasons(summary)]
+    limited = review_items[:limit]
+    return {
+        "generated_at": utc_now(),
+        "limit": limit,
+        "count": len(limited),
+        "total_attention_items": len(review_items),
+        "queue_empty": not review_items,
+        "receipts": limited,
+    }
+
+
+def agent_boot_payload() -> dict[str, Any]:
+    status = node_status_payload()
+    capabilities = capability_registry_payload()
+    ops = manual_ops_catalog()
+    recent_ops = recent_ops_receipts(limit=10)
+    projects = projects_payload()
+    default_project = project_context_payload(projects["default_project_id"])
+    return {
+        "generated_at": status["generated_at"],
+        "release": "v0-agent-boot-projects",
+        "orientation": {
+            "where_am_i": "Homestead Private OS API",
+            "what_is_homestead": "A private, cloud-first operating spine for Adam-commanded agent work.",
+            "who_is_adam": "Adam is the authority. Agents and Codex are operators.",
+            "operating_mode": "manual_only",
+            "autonomy": False,
+        },
+        "authority": {
+            "adam": "authority",
+            "agents": "operators",
+            "commands": "manual_only",
+            "agents_decide_next_work": False,
+        },
+        "loop_protocol": {
+            "name": "soul_loop_and_loop_forge",
+            "steps": ["frame", "build", "adversary_review", "resolve", "handoff"],
+            "needs_decision": "escalate_to_adam",
+        },
+        "read_first": [
+            "/docs/RUNBOOK.md",
+            "/docs/ACCEPTANCE-TESTS.md",
+            "/docs/HANDOFF-AGENT-BOOT-PROJECTS.md",
+            "/docs/HANDOFF-MANUAL-OPS-PROBES.md",
+            status["keep_health"]["dir"] + "/homestead-latest.md",
+        ],
+        "project_registry": {
+            "endpoint": "/os/projects",
+            "default_project_id": projects["default_project_id"],
+            "projects": projects["projects"],
+        },
+        "active_project": default_project,
+        "health": {
+            "node": public_summary_status(status),
+            "model_gateway": status["model_gateway"]["active"],
+            "receipts": status["receipts"],
+            "review_queue": review_queue_summary(limit=10),
+        },
+        "capabilities": capabilities,
+        "manual_ops": {
+            "catalog": ops,
+            "recent": recent_ops,
+        },
+        "disabled": {
+            "runner": capabilities["entries"]["runner"],
+            "scheduler_enabled": False,
+            "local_mode": capabilities["entries"]["local_mode"],
+            "dashboard": capabilities["entries"]["dashboard"],
+            "alerts": capabilities["entries"]["alerts"],
+        },
+        "content_policy": {
+            "prompt_capture_default": False,
+            "completion_capture_default": False,
+            "secret_values": "never_return",
+            "raw_env": "never_return",
+        },
+    }
+
+
 def capability_registry_payload() -> dict[str, Any]:
     status = node_status_payload()
     gateway = status["model_gateway"]
@@ -799,6 +1002,22 @@ def capability_registry_payload() -> dict[str, Any]:
             "surface": ["/os/capabilities", "homestead.os_capabilities"],
             "agent_safe": True,
             "write_access": "none",
+        },
+        "agent_boot": {
+            "enabled": True,
+            "status": "active",
+            "surface": ["/agent/boot", "homestead.agent_boot"],
+            "agent_safe": True,
+            "write_access": "none",
+            "autonomous_execution": False,
+        },
+        "project_registry": {
+            "enabled": True,
+            "status": "config_backed",
+            "surface": ["/os/projects", "/os/projects/{project_id}", "homestead.projects", "homestead.project_context"],
+            "agent_safe": True,
+            "write_access": "none",
+            "project_count": len(PROJECT_REGISTRY),
         },
         "model_route": {
             "enabled": True,
@@ -956,6 +1175,9 @@ def os_context_payload() -> dict[str, Any]:
             "homestead.os_status",
             "homestead.os_context",
             "homestead.os_capabilities",
+            "homestead.agent_boot",
+            "homestead.projects",
+            "homestead.project_context",
             "homestead.ops_policy",
             "homestead.check_ops_policy",
             "homestead.list_manual_ops",
@@ -1462,6 +1684,21 @@ def os_status() -> dict[str, Any]:
 @app.get("/os/context")
 def os_context() -> dict[str, Any]:
     return os_context_payload()
+
+
+@app.get("/agent/boot")
+def agent_boot() -> dict[str, Any]:
+    return agent_boot_payload()
+
+
+@app.get("/os/projects")
+def os_projects() -> dict[str, Any]:
+    return projects_payload()
+
+
+@app.get("/os/projects/{project_id}")
+def os_project_context(project_id: str) -> dict[str, Any]:
+    return project_context_payload(project_id)
 
 
 @app.get("/os/capabilities")
