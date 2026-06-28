@@ -63,12 +63,140 @@ Open a fresh agent and type only:
 Boot Homestead.
 ```
 
-Then ask these three questions:
+Then ask these six questions:
 
 ```text
 1. What is Homestead, and what should an agent read first before working?
 2. What is the current operating mode, and which capabilities are disabled?
 3. What does Homestead use output capsules for, and where are they stored?
+4. What is the Creative Coatings powder scheduler, and what problem does it solve?
+5. What is the difference between Core Dump Inbox and Schedule Intake Inbox?
+6. Is Creative Coatings part of the Homestead runtime, or is it a separate project context?
+```
+
+## Question Checks
+
+### 1. What is Homestead, and what should an agent read first before working?
+
+PASS reply:
+
+```text
+Homestead is Adam's private operating spine / owned memory system. A fresh agent should boot from Homestead, read the Deed and active project context, then use Keep concepts before answering. It cites concept-deed-571b2b47 and/or concept-homestead-cdd07bcc.
+```
+
+FAIL reply:
+
+```text
+It asks Adam what Homestead is, treats Homestead as a public SaaS, or answers without a concept_id.
+```
+
+Expected concept IDs:
+
+```text
+concept-deed-571b2b47
+concept-homestead-cdd07bcc
+```
+
+### 2. What is the current operating mode, and which capabilities are disabled?
+
+PASS reply:
+
+```text
+Homestead is manual-only. Adam is the authority; agents are operators. Runner, scheduler, dashboard, alerts, local mode, and autonomous claiming are disabled. It cites a Homestead concept such as concept-deed-571b2b47 plus live status context such as concept-system-receipts-homestead-health-homestead-latest-7d8b5c17 when available.
+```
+
+FAIL reply:
+
+```text
+It claims Homestead can autonomously claim work, run a scheduler, expose a dashboard, or enable local mode.
+```
+
+Expected concept IDs:
+
+```text
+concept-deed-571b2b47
+concept-system-receipts-homestead-health-homestead-latest-7d8b5c17
+```
+
+### 3. What does Homestead use output capsules for, and where are they stored?
+
+PASS reply:
+
+```text
+Output capsules preserve useful work and continuation context as durable bundles under /System Outputs/{project_id}/{YYYY-MM-DD}-{slug}/. Receipts remain separate proof of system behavior. It cites concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-2026062-c40f3eb1.
+```
+
+FAIL reply:
+
+```text
+It says capsules live in /System Receipts, treats receipts as capsules, or cannot name the /System Outputs path.
+```
+
+Expected concept ID:
+
+```text
+concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-2026062-c40f3eb1
+```
+
+### 4. What is the Creative Coatings powder scheduler, and what problem does it solve?
+
+PASS reply:
+
+```text
+Creative Coatings is a separate powder-schedule business workflow. Its app manages a weekly powder board, schedule inbox, core/open-order candidate pool, traveler/photo intake, Add to Schedule, Hot List, and shop handoff. It is not Homestead infrastructure. It cites concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6.
+```
+
+FAIL reply:
+
+```text
+It describes Creative Coatings as an OS runtime, runner, dashboard for Homestead, or answers without a Creative Coatings concept_id.
+```
+
+Expected concept ID:
+
+```text
+concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6
+```
+
+### 5. What is the difference between Core Dump Inbox and Schedule Intake Inbox?
+
+PASS reply:
+
+```text
+Core Dump Inbox is for clean plant/open-order data that refreshes the In Process candidate pool. Schedule Intake Inbox is for messy human scheduling inputs such as Monday sheets, traveler photos, hot-list emails, customer notes, screenshots, PDFs, Docs, sheets, and partial files. Core refresh must not wipe schedule-inbox, weekly-board, manual, traveler, or Sent to Shop rows. It cites concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6.
+```
+
+FAIL reply:
+
+```text
+It merges the two inboxes, says core dumps replace all schedule state, or imports Homestead output-capsule rules into Creative Coatings scheduling.
+```
+
+Expected concept ID:
+
+```text
+concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6
+```
+
+### 6. Is Creative Coatings part of the Homestead runtime, or is it a separate project context?
+
+PASS reply:
+
+```text
+Creative Coatings is a separate project context indexed by Homestead. Homestead is the private OS/control spine; Creative Coatings is a powder scheduler/workflow project. The agent should keep those contexts separate and cite both a Homestead concept and a Creative Coatings concept, such as concept-deed-571b2b47 and concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6.
+```
+
+FAIL reply:
+
+```text
+It blurs Creative Coatings into the Homestead runtime, says Homestead's disabled scheduler is the Creative Coatings scheduler, or answers with only one project's concept IDs.
+```
+
+Expected concept IDs:
+
+```text
+concept-deed-571b2b47
+concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsul-59a7f1b6
 ```
 
 ## PASS Shape
@@ -101,8 +229,12 @@ invents a second project for the Phase 1 proof
 
 ## Current Phase 1 Status
 
-Homestead Private OS content can be indexed and cited now.
+Homestead Private OS and Creative Coatings content are the required Phase 1 project pair.
 
-`NEEDS_DECISION`: Adam still needs to name the second live project to include beside `homestead-private-os` for the full Phase 1 proof.
+The Creative Coatings ingest lives under:
 
-Until Adam names that project, the Door can be built and partially tested, but the full Phase 1 acceptance is not complete.
+```text
+/System Outputs/creative-coatings/2026-06-28-door-ingest-creative-coatings/
+```
+
+Phase 1 is not complete until the live cold-boot proof passes and is tagged.

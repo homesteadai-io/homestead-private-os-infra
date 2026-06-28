@@ -50,7 +50,7 @@ def clear_langfuse_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def init_repo(path: Path) -> None:
+def init_repo(path: Path, include_creative_coatings: bool = False) -> None:
     subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
@@ -63,7 +63,19 @@ def init_repo(path: Path) -> None:
         "Private OS markdown shelf with command sessions and output capsules.\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "index.md"], cwd=path, check=True)
+    paths_to_add = ["index.md"]
+    if include_creative_coatings:
+        creative = path / "System Outputs" / "creative-coatings" / "2026-06-28-door-ingest-creative-coatings" / "CAPSULE.md"
+        creative.parent.mkdir(parents=True)
+        creative.write_text(
+            "# Creative Coatings Door Ingest\n\n"
+            "Creative Coatings is a production powder scheduler with a Weekly Board, "
+            "Core Dump Inbox, Schedule Intake Inbox, Run Intake Agent trigger, "
+            "Add to Schedule, Hot List, and Complete / Send to Shop workflow.\n",
+            encoding="utf-8",
+        )
+        paths_to_add.append(str(creative.relative_to(path)))
+    subprocess.run(["git", "add", *paths_to_add], cwd=path, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True, capture_output=True)
 
 
@@ -110,20 +122,7 @@ def test_context_pack_and_read_concept(monkeypatch, tmp_path):
 
 
 def test_keep_concept_index_search_and_read(monkeypatch, tmp_path):
-    init_repo(tmp_path)
-    second = tmp_path / "projects" / "frostbite.md"
-    second.parent.mkdir()
-    second.write_text(
-        "---\n"
-        "title: Frostbite Workflow\n"
-        "project_id: frostbite\n"
-        "---\n\n"
-        "# Frostbite\n\n"
-        "A real project context lane for campaign and operational workflow memory.\n",
-        encoding="utf-8",
-    )
-    subprocess.run(["git", "add", "projects/frostbite.md"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-m", "add frostbite"], cwd=tmp_path, check=True, capture_output=True)
+    init_repo(tmp_path, include_creative_coatings=True)
     monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
 
     concepts = client.get("/keep/concepts", params={"project_id": "homestead-private-os"})
@@ -136,12 +135,12 @@ def test_keep_concept_index_search_and_read(monkeypatch, tmp_path):
 
     search = client.post(
         "/keep/concepts/search",
-        json={"query": "campaign workflow", "project_id": "frostbite", "max_results": 5},
+        json={"query": "powder scheduler weekly board", "project_id": "creative-coatings", "max_results": 5},
     )
     assert search.status_code == 200
     assert search.json()["count"] == 1
-    assert search.json()["concepts"][0]["project_id"] == "frostbite"
-    assert search.json()["concepts"][0]["concept_id"].startswith("concept-projects-frostbite-")
+    assert search.json()["concepts"][0]["project_id"] == "creative-coatings"
+    assert search.json()["concepts"][0]["concept_id"].startswith("concept-system-outputs-creative-coatings-")
 
     read = client.get(f"/keep/concepts/{concept_id}")
     assert read.status_code == 200
@@ -529,7 +528,7 @@ def test_os_context_is_cloud_first_with_local_disabled(monkeypatch, tmp_path):
 
 
 def test_agent_boot_and_projects_are_agent_safe_without_secrets(monkeypatch, tmp_path):
-    init_repo(tmp_path)
+    init_repo(tmp_path, include_creative_coatings=True)
     monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
     monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
@@ -551,11 +550,18 @@ def test_agent_boot_and_projects_are_agent_safe_without_secrets(monkeypatch, tmp
     assert body["active_project"]["project_id"] == "homestead-private-os"
     assert body["door"]["phrase"] == "Boot Homestead."
     assert body["door"]["not_a_login_flow"] is True
+    assert body["concepts"]["status"] == "ready_for_live_cold_boot"
     assert body["concepts"]["must_cite"] == "concept_id"
+    assert body["concepts"]["required_projects"] == ["homestead-private-os", "creative-coatings"]
     assert body["concepts"]["homestead_private_os_seed"][0]["concept_id"].startswith("concept-index-")
     assert body["concepts"]["homestead_private_os_seed"][0]["project_id"] == "homestead-private-os"
-    assert body["concepts"]["needs_decision"].startswith("Name one other live project")
-    assert body["cold_boot_test"]["status"] == "partial_until_second_project_named"
+    assert body["concepts"]["creative_coatings_seed"][0]["project_id"] == "creative-coatings"
+    assert body["cold_boot_test"]["status"] == "requires_live_proof_across_homestead_private_os_and_creative_coatings"
+    assert len(body["cold_boot_test"]["questions"]) == 6
+    assert {item["project_id"] for item in body["cold_boot_test"]["questions"]} == {
+        "homestead-private-os",
+        "creative-coatings",
+    }
     assert body["capabilities"]["entries"]["agent_boot"]["enabled"] is True
     assert body["capabilities"]["entries"]["keep_concepts"]["enabled"] is True
     assert body["capabilities"]["entries"]["keep_concepts"]["write_access"] == "none"

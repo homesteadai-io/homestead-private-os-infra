@@ -317,6 +317,11 @@ $tmp = New-TemporaryFile
 Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"query":"Homestead Private OS output capsules","project_id":"homestead-private-os","max_results":5}'
 curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/keep/concepts/search -H "Content-Type: application/json" --data-binary "@$tmp"
 Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"query":"Creative Coatings powder scheduler schedule intake weekly board","project_id":"creative-coatings","max_results":5}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/keep/concepts/search -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
 ```
 
 Expected:
@@ -324,9 +329,11 @@ Expected:
 ```text
 agent_boot.door.phrase = Boot Homestead.
 agent_boot.concepts.must_cite = concept_id
-concept search returns count >= 1
-concepts[].concept_id is present
-concepts[].project_id = homestead-private-os
+agent_boot.concepts.required_projects includes homestead-private-os and creative-coatings
+homestead-private-os concept search returns count >= 1
+creative-coatings concept search returns count >= 1
+concepts[].concept_id is present for both projects
+concepts[].project_id is correct
 concepts[].source_keep_path is a Keep-relative path
 ```
 
@@ -346,7 +353,7 @@ result.concepts[0].concept_id
 result.concepts[0].source_keep_path
 ```
 
-Full Phase 1 remains `NEEDS_DECISION` until Adam names the second live project to ingest and cold-test beside `homestead-private-os`.
+Adam-readable cold-boot acceptance requires six questions from `docs/DOOR-COLD-BOOT.md`: three Homestead questions and three Creative Coatings questions. A passing reply must keep the projects separate and cite expected `concept_id` values for each answer.
 
 ## 11. OpenRouter Model Route Works
 

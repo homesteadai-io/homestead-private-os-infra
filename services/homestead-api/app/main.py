@@ -1780,17 +1780,24 @@ def door_concepts_summary() -> dict[str, Any]:
             project_id="homestead-private-os",
             max_results=6,
         )
+        creative_concepts = concept_index(
+            query="Creative Coatings powder scheduler schedule intake weekly board",
+            project_id="creative-coatings",
+            max_results=6,
+        )
     except HTTPException as exc:
         return {
             "status": "unavailable",
             "reason": exc.detail,
             "concepts": [],
-            "needs_decision": "Adam still needs to name the second live project for the full Phase 1 proof.",
+            "required_projects": ["homestead-private-os", "creative-coatings"],
         }
+    ready = bool(homestead_concepts and creative_concepts)
     return {
-        "status": "ready" if homestead_concepts else "needs_real_content",
+        "status": "ready_for_live_cold_boot" if ready else "needs_real_content",
         "source": "existing Keep markdown indexed read-only",
         "must_cite": "concept_id",
+        "required_projects": ["homestead-private-os", "creative-coatings"],
         "endpoints": {
             "list": "/keep/concepts",
             "search": "/keep/concepts/search",
@@ -1802,7 +1809,7 @@ def door_concepts_summary() -> dict[str, Any]:
             "homestead.keep_concept_read",
         ],
         "homestead_private_os_seed": homestead_concepts,
-        "needs_decision": "Name one other live project to ingest and cold-test beside homestead-private-os.",
+        "creative_coatings_seed": creative_concepts,
     }
 
 
@@ -1853,18 +1860,51 @@ def agent_boot_payload() -> dict[str, Any]:
         },
         "concepts": door_concepts_summary(),
         "cold_boot_test": {
-            "status": "partial_until_second_project_named",
+            "status": "requires_live_proof_across_homestead_private_os_and_creative_coatings",
+            "questions": [
+                {
+                    "id": "homestead_identity",
+                    "project_id": "homestead-private-os",
+                    "question": "What is Homestead, and what should an agent read first before working?",
+                },
+                {
+                    "id": "homestead_disabled_capabilities",
+                    "project_id": "homestead-private-os",
+                    "question": "What is the current Homestead operating mode, and which capabilities are disabled?",
+                },
+                {
+                    "id": "homestead_output_capsules",
+                    "project_id": "homestead-private-os",
+                    "question": "What does Homestead use output capsules for, and where are they stored?",
+                },
+                {
+                    "id": "creative_app_purpose",
+                    "project_id": "creative-coatings",
+                    "question": "What is the Creative Coatings powder scheduler, and what problem does it solve?",
+                },
+                {
+                    "id": "creative_two_inbox",
+                    "project_id": "creative-coatings",
+                    "question": "What is the difference between Core Dump Inbox and Schedule Intake Inbox?",
+                },
+                {
+                    "id": "project_separation",
+                    "project_id": "creative-coatings",
+                    "question": "Is Creative Coatings part of the Homestead runtime, or is it a separate project context?",
+                },
+            ],
             "pass_reply_must": [
                 "state that it booted from Homestead",
                 "name the project it is answering about",
                 "cite at least two concept_id values from Keep concepts",
+                "keep homestead-private-os and creative-coatings context separate",
                 "avoid claiming runner, scheduler, dashboard, local mode, or autonomous work is enabled",
             ],
             "fail_reply_if": [
                 "it asks Adam to re-brief Homestead basics",
                 "it answers without concept_id citations",
                 "it cites only repo docs or prior chat context",
-                "it invents a second project Adam did not name",
+                "it treats Creative Coatings as Homestead runtime infrastructure",
             ],
         },
         "project_registry": {
