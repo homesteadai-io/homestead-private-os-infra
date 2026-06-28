@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 
 app = FastAPI(title="Homestead Private OS API", version="0.1.0")
+STARTED_AT = time.time()
 
 
 def repo_path() -> Path:
@@ -24,6 +25,13 @@ def repo_path() -> Path:
 
 def receipts_dir() -> Path:
     return Path(os.getenv("RECEIPTS_DIR", "receipts")).resolve()
+
+
+def keep_health_dir() -> Path:
+    relative = os.getenv("KEEP_HEALTH_DIR", "System Receipts/Homestead Health").strip()
+    if not relative:
+        relative = "System Receipts/Homestead Health"
+    return safe_relative_path(relative.lstrip("/"))
 
 
 def utc_now() -> str:
@@ -151,6 +159,11 @@ class ModelRouteRequest(BaseModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
 
 
+class KeepHealthSyncRequest(BaseModel):
+    requesting_agent: str = "unknown"
+    note: str | None = None
+
+
 def clean_run_id(value: str | None) -> str:
     raw = value or f"run-{uuid4().hex[:12]}"
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-._")
@@ -245,6 +258,245 @@ def sorted_receipt_summaries(paths: list[Path]) -> list[dict[str, Any]]:
     )
 
 
+def safe_git_status() -> dict[str, Any]:
+    try:
+        root = require_repo()
+        status = repo_status()
+        tag = run_git(["describe", "--tags", "--exact-match", "HEAD"], root)
+        status["tag"] = tag["stdout"] if tag["ok"] else None
+        return {"ok": True, **status}
+    except HTTPException as exc:
+        return {"ok": False, "error": exc.detail}
+
+
+def receipt_status_summary() -> dict[str, Any]:
+    stats = receipts_stats()
+    recent = sorted_receipt_summaries(all_receipt_json_files())[:1]
+    latest = recent[0] if recent else None
+    return {
+        **stats,
+        "latest": latest,
+        "enabled": model_route_receipts_enabled(),
+        "include_content": model_route_receipts_include_content(),
+    }
+
+
+def redacted_configured(value: str | None) -> bool:
+    return bool((value or "").strip())
+
+
+def model_gateway_status() -> dict[str, Any]:
+    gateway = model_gateway()
+    openrouter = {
+        "configured": all(
+            redacted_configured(os.getenv(name))
+            for name in [
+                "OPENROUTER_API_KEY",
+                "OPENROUTER_BASE_URL",
+                "OPENROUTER_DEFAULT_MODEL",
+                "OPENROUTER_HTTP_REFERER",
+                "OPENROUTER_APP_TITLE",
+            ]
+        ),
+        "base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip(),
+        "default_model": os.getenv("OPENROUTER_DEFAULT_MODEL", "").strip(),
+    }
+    litellm = {
+        "configured": all(
+            redacted_configured(os.getenv(name))
+            for name in ["LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_DEFAULT_MODEL"]
+        ),
+        "base_url": os.getenv("LITELLM_BASE_URL", "http://litellm:4000").strip(),
+        "default_model": os.getenv("LITELLM_DEFAULT_MODEL", "").strip(),
+        "send_temperature": env_flag("LITELLM_SEND_TEMPERATURE"),
+        "private_path_expected": os.getenv("LITELLM_BASE_URL", "").strip().startswith(
+            ("http://litellm:", "http://127.0.0.1:", "http://localhost:")
+        ),
+    }
+    return {"active": gateway, "openrouter": openrouter, "litellm": litellm}
+
+
+def langfuse_status() -> dict[str, Any]:
+    return {
+        "enabled": env_flag("LANGFUSE_ENABLED"),
+        "configured": all(
+            redacted_configured(os.getenv(name))
+            for name in ["LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"]
+        ),
+        "host": os.getenv("LANGFUSE_HOST", "").strip(),
+        "environment": os.getenv("LANGFUSE_ENVIRONMENT", "homestead-private-os").strip(),
+        "release": os.getenv("LANGFUSE_RELEASE", "v0-openrouter-route").strip(),
+    }
+
+
+def exposure_assumptions() -> dict[str, Any]:
+    http_bind = os.getenv("CADDY_HTTP_BIND", "127.0.0.1")
+    https_bind = os.getenv("CADDY_HTTPS_BIND", "127.0.0.1")
+    return {
+        "caddy_http_bind": http_bind,
+        "caddy_http_port": os.getenv("CADDY_HTTP_PORT", "80"),
+        "caddy_https_bind": https_bind,
+        "caddy_https_port": os.getenv("CADDY_HTTPS_PORT", "443"),
+        "homestead_public_expected_closed": http_bind not in {"0.0.0.0", "::"},
+        "langfuse_public_expected_closed": True,
+        "minio_public_expected_closed": True,
+        "litellm_public_expected_closed": True,
+        "litellm_tailscale_expected_closed": True,
+    }
+
+
+def node_status_payload() -> dict[str, Any]:
+    receipts = receipt_status_summary()
+    return {
+        "ok": True,
+        "service": "homestead-api",
+        "version": app.version,
+        "generated_at": utc_now(),
+        "uptime_seconds": int(time.time() - STARTED_AT),
+        "environment": os.getenv("HOMESTEAD_ENV", "local"),
+        "repo_path": str(repo_path()),
+        "git": safe_git_status(),
+        "model_gateway": model_gateway_status(),
+        "langfuse": langfuse_status(),
+        "receipts": receipts,
+        "keep_health": {
+            "dir": "/" + keep_health_dir().relative_to(repo_path()).as_posix()
+            if repo_path() in [keep_health_dir(), *keep_health_dir().parents]
+            else str(keep_health_dir()),
+        },
+        "exposure": exposure_assumptions(),
+        "capabilities": cloud_capabilities(),
+    }
+
+
+def cloud_capabilities() -> dict[str, Any]:
+    return {
+        "cloud_node": {"enabled": True, "status": "active"},
+        "model_route": {"enabled": True, "default_gateway": "direct"},
+        "langfuse_tracing": {"enabled": env_flag("LANGFUSE_ENABLED"), "fail_open": True},
+        "model_route_receipts": {
+            "enabled": model_route_receipts_enabled(),
+            "content_capture": model_route_receipts_include_content(),
+        },
+        "receipt_index": {"enabled": True, "read_only": True},
+        "keep_health_receipts": {"enabled": True, "write_mode": "explicit_sync_only"},
+        "local_mode": {
+            "enabled": False,
+            "status": "available_later",
+            "activation": "manual_switch_only",
+        },
+        "runner": {"enabled": False, "status": "intentionally_disabled"},
+        "alerts": {"enabled": False, "status": "intentionally_disabled"},
+        "dashboard": {"enabled": False, "status": "intentionally_disabled"},
+    }
+
+
+def os_context_payload() -> dict[str, Any]:
+    status = node_status_payload()
+    return {
+        "generated_at": status["generated_at"],
+        "cloud_first": True,
+        "local_mode": status["capabilities"]["local_mode"],
+        "node": status,
+        "keep": {
+            "repo_path": str(repo_path()),
+            "health_dir": status["keep_health"]["dir"],
+            "search_enabled": True,
+            "health_receipts_enabled": True,
+        },
+        "mcp_tools": [
+            "homestead.node_status",
+            "homestead.os_status",
+            "homestead.os_context",
+            "homestead.sync_keep_health",
+            "homestead.list_recent_receipts",
+            "homestead.read_receipt",
+            "homestead.receipt_stats",
+        ],
+    }
+
+
+def health_markdown(status: dict[str, Any], requesting_agent: str, note: str | None = None) -> str:
+    latest = status["receipts"].get("latest") or {}
+    note_section = f"\nNote: {note}\n" if note else ""
+    return f"""## {status["generated_at"]}
+
+- requesting_agent: {requesting_agent}
+- environment: {status["environment"]}
+- git: {status["git"].get("latest_commit")}
+- tag: {status["git"].get("tag")}
+- model_gateway: {status["model_gateway"]["active"]}
+- litellm_private_path_expected: {status["model_gateway"]["litellm"]["private_path_expected"]}
+- langfuse_enabled: {status["langfuse"]["enabled"]}
+- receipt_writing_enabled: {status["receipts"]["enabled"]}
+- receipt_count: {status["receipts"]["total"]}
+- review_required_count: {status["receipts"]["review_required"]}
+- latest_receipt: {latest.get("receipt_id")}
+- latest_receipt_timestamp: {latest.get("timestamp")}
+- latest_receipt_gateway: {latest.get("gateway")}
+- local_mode_enabled: {status["capabilities"]["local_mode"]["enabled"]}
+- public_homestead_expected_closed: {status["exposure"]["homestead_public_expected_closed"]}
+- public_litellm_expected_closed: {status["exposure"]["litellm_public_expected_closed"]}
+{note_section}"""
+
+
+def ensure_index(path: Path) -> None:
+    if path.exists():
+        return
+    path.write_text(
+        "# Homestead Health Receipts\n\n"
+        "Append-only operational health summaries for the Homestead cloud node.\n"
+        "Prompt/content and secret values are intentionally omitted.\n\n",
+        encoding="utf-8",
+    )
+
+
+def append_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+        if not text.endswith("\n"):
+            handle.write("\n")
+
+
+def sync_keep_health_summary(requesting_agent: str, note: str | None = None) -> dict[str, Any]:
+    status = node_status_payload()
+    base = keep_health_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    date = status["generated_at"][:10]
+    stamp = status["generated_at"].replace(":", "").replace("-", "").replace("Z", "Z")
+    summary = health_markdown(status, requesting_agent=requesting_agent, note=note)
+
+    index = base / "index.md"
+    latest = base / "homestead-latest.md"
+    log = base / "homestead-health-log.md"
+    daily = base / "daily" / f"{date}.md"
+    gateway = base / "gateway" / "gateway-health.md"
+    snapshot = base / "snapshots" / f"{stamp}.md"
+
+    ensure_index(index)
+    append_text(latest, summary + "\n")
+    append_text(log, summary + "\n")
+    append_text(daily, summary + "\n")
+    append_text(gateway, summary + "\n")
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text("# Homestead Health Snapshot\n\n" + summary, encoding="utf-8")
+
+    written = [index, latest, log, daily, gateway, snapshot]
+    if status["receipts"]["review_required"]:
+        review = base / "homestead-review-required.md"
+        append_text(review, summary + "\n")
+        written.append(review)
+
+    return {
+        "ok": True,
+        "generated_at": status["generated_at"],
+        "health_dir": "/" + base.relative_to(repo_path()).as_posix(),
+        "files_changed": ["/" + path.relative_to(repo_path()).as_posix() for path in written],
+        "status": status,
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -253,6 +505,26 @@ def health() -> dict[str, Any]:
         "version": "0.1.0",
         "repo_path": str(repo_path()),
     }
+
+
+@app.get("/node/status")
+def node_status() -> dict[str, Any]:
+    return node_status_payload()
+
+
+@app.get("/os/status")
+def os_status() -> dict[str, Any]:
+    return node_status_payload()
+
+
+@app.get("/os/context")
+def os_context() -> dict[str, Any]:
+    return os_context_payload()
+
+
+@app.post("/keep/health/sync")
+def keep_health_sync(request: KeepHealthSyncRequest) -> dict[str, Any]:
+    return sync_keep_health_summary(request.requesting_agent, request.note)
 
 
 @app.get("/receipts/recent")

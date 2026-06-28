@@ -59,6 +59,26 @@ TOOLS = [
         "description": "Return aggregate counts for Homestead receipts.",
         "input_schema": {},
     },
+    {
+        "name": "homestead.node_status",
+        "description": "Return Homestead cloud node health, configuration, and receipt status.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.os_status",
+        "description": "Return Homestead cloud-first OS status.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.os_context",
+        "description": "Return cloud-first Homestead OS context, capabilities, and local-mode readiness.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.sync_keep_health",
+        "description": "Write metadata-only Homestead health summaries into The Keep.",
+        "input_schema": {"requesting_agent": "string optional", "note": "string optional"},
+    },
 ]
 
 
@@ -126,5 +146,13 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         return await api_request("GET", f"/receipts/{date}/{receipt_id}")
     if tool == "homestead.receipt_stats":
         return await api_request("GET", "/receipts/stats")
+    if tool == "homestead.node_status":
+        return await api_request("GET", "/node/status")
+    if tool == "homestead.os_status":
+        return await api_request("GET", "/os/status")
+    if tool == "homestead.os_context":
+        return await api_request("GET", "/os/context")
+    if tool == "homestead.sync_keep_health":
+        return await api_request("POST", "/keep/health/sync", arguments)
 
     raise HTTPException(status_code=404, detail=f"unknown tool: {tool}")

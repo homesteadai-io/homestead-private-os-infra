@@ -702,7 +702,57 @@ homestead.read_receipt
 homestead.receipt_stats
 ```
 
-## 16. Reboot Survival
+## 17. Cloud OS Status And Keep Health
+
+From Adam's laptop:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/node/status
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/os/status
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/os/context
+```
+
+Expected:
+
+```text
+ok=true
+model_gateway.active
+langfuse.enabled
+receipts.total
+receipts.latest
+capabilities.local_mode.enabled=false
+capabilities.runner.enabled=false
+capabilities.dashboard.enabled=false
+```
+
+MCP tools:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.node_status","arguments":{}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Sync metadata-only health summaries into The Keep:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"requesting_agent":"acceptance-health-sync","note":"cloud OS status acceptance"}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/api/keep/health/sync -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+files_changed includes /System Receipts/Homestead Health/...
+no prompt/content capture
+no secret values
+The Keep has homestead-latest.md, homestead-health-log.md, daily/YYYY-MM-DD.md, gateway/gateway-health.md, and snapshots/<timestamp>.md
+```
+
+## 18. Reboot Survival
 
 Run only when brief server downtime is acceptable:
 

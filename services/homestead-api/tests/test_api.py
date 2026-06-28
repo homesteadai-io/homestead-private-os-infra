@@ -32,6 +32,11 @@ def clear_langfuse_env(monkeypatch):
         "LITELLM_API_KEY",
         "LITELLM_DEFAULT_MODEL",
         "LITELLM_SEND_TEMPERATURE",
+        "KEEP_HEALTH_DIR",
+        "CADDY_HTTP_BIND",
+        "CADDY_HTTPS_BIND",
+        "CADDY_HTTP_PORT",
+        "CADDY_HTTPS_PORT",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -269,6 +274,136 @@ def test_receipt_stats(monkeypatch, tmp_path):
     assert response.json()["by_verdict"]["ok"] == 1
     assert response.json()["by_verdict"]["error"] == 1
     assert response.json()["review_required"] == 1
+
+
+def test_node_status_reports_cloud_health_without_secrets(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("HOMESTEAD_ENV", "pytest")
+    monkeypatch.setenv("MODEL_GATEWAY", "direct")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://homesteadai.io")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Homestead Private OS")
+    monkeypatch.setenv("LITELLM_API_KEY", "super-secret-litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://litellm:4000")
+    monkeypatch.setenv("LITELLM_DEFAULT_MODEL", "haiku")
+    monkeypatch.setenv("LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse-web:3000")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-secret")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-secret")
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "model-route-status",
+        {
+            "requesting_agent": "pytest",
+            "task": "model_route",
+            "model_used": "openai/gpt-4.1-mini",
+            "files_read": [],
+            "actions_taken": [],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "ok",
+            "metadata": {"route": "/model/route", "gateway": "direct", "ok": True},
+        },
+    )
+
+    response = client.get("/node/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["environment"] == "pytest"
+    assert body["model_gateway"]["active"] == "direct"
+    assert body["model_gateway"]["openrouter"]["configured"] is True
+    assert body["model_gateway"]["litellm"]["configured"] is True
+    assert body["langfuse"]["enabled"] is True
+    assert body["receipts"]["total"] == 1
+    assert body["receipts"]["latest"]["gateway"] == "direct"
+    assert body["capabilities"]["local_mode"]["enabled"] is False
+    assert "super-secret" not in response.text
+    assert "pk-secret" not in response.text
+    assert "sk-secret" not in response.text
+
+
+def test_os_context_is_cloud_first_with_local_disabled(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+
+    response = client.get("/os/context")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cloud_first"] is True
+    assert body["local_mode"]["enabled"] is False
+    assert body["local_mode"]["activation"] == "manual_switch_only"
+    assert "homestead.node_status" in body["mcp_tools"]
+    assert body["keep"]["health_receipts_enabled"] is True
+
+
+def test_keep_health_sync_writes_metadata_only_to_keep(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("KEEP_HEALTH_DIR", "System Receipts/Homestead Health")
+    monkeypatch.setenv("MODEL_GATEWAY", "direct")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    write_test_receipt(
+        receipts,
+        "2026-06-28",
+        "model-route-keep-health",
+        {
+            "requesting_agent": "pytest",
+            "task": "model_route",
+            "model_used": "openai/gpt-4.1-mini",
+            "files_read": [],
+            "actions_taken": [],
+            "files_changed": [],
+            "review_required": False,
+            "verdict": "ok",
+            "metadata": {
+                "route": "/model/route",
+                "gateway": "direct",
+                "ok": True,
+                "requested_model": "openai/gpt-4.1-mini",
+            },
+        },
+        markdown="# Receipt\n\nsecret prompt should stay server-side\n",
+    )
+
+    response = client.post(
+        "/keep/health/sync",
+        json={"requesting_agent": "pytest-operator", "note": "acceptance sync"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["health_dir"] == "/System Receipts/Homestead Health"
+    expected = [
+        "/System Receipts/Homestead Health/index.md",
+        "/System Receipts/Homestead Health/homestead-latest.md",
+        "/System Receipts/Homestead Health/homestead-health-log.md",
+        "/System Receipts/Homestead Health/gateway/gateway-health.md",
+    ]
+    for path in expected:
+        assert path in body["files_changed"]
+        assert (tmp_path / path.lstrip("/")).exists()
+
+    combined = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "System Receipts" / "Homestead Health").rglob("*.md")
+    )
+    assert "model-route-keep-health" in combined
+    assert "acceptance sync" in combined
+    assert "secret prompt" not in combined
+    assert "super-secret-openrouter" not in combined
 
 
 def test_model_route_requires_openrouter_config(monkeypatch):
