@@ -550,7 +550,77 @@ private Langfuse health succeeds
 LiteLLM over Tailscale fails
 ```
 
-## 15. Reboot Survival
+## 15. Receipt Read/Index Surface
+
+The receipt index is read-only. It should return metadata summaries for list endpoints and full receipt files only when a specific receipt is requested by date and id.
+
+From Adam's laptop:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/receipts/recent?limit=5
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/receipts/stats
+```
+
+Expected recent receipt summary fields:
+
+```text
+receipt_id
+timestamp
+task
+requesting_agent
+verdict
+review_required
+route
+requested_model
+model_used
+latency_ms
+usage
+langfuse_trace_id
+markdown_path
+json_path
+```
+
+Read a specific receipt from the recent list:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/receipts/by-date/<YYYY-MM-DD>
+curl.exe --max-time 10 http://<tailscale-ip>:8088/api/receipts/<YYYY-MM-DD>/<receipt-id>
+```
+
+Expected:
+
+```text
+by-date returns metadata summaries only
+exact read returns summary, parsed JSON, and Markdown for that explicit receipt
+missing receipt returns safe 404
+malformed date returns safe 400
+```
+
+MCP receipt tools:
+
+```powershell
+curl.exe --max-time 10 http://<tailscale-ip>:8088/mcp/tools
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.list_recent_receipts","arguments":{"limit":5}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.receipt_stats","arguments":{}}'
+curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected MCP tools:
+
+```text
+homestead.list_recent_receipts
+homestead.read_receipt
+homestead.receipt_stats
+```
+
+## 16. Reboot Survival
 
 Run only when brief server downtime is acceptable:
 

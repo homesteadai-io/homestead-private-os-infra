@@ -157,6 +157,93 @@ def clean_run_id(value: str | None) -> str:
     return cleaned or f"run-{uuid4().hex[:12]}"
 
 
+def validate_receipt_date(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from exc
+    return parsed.isoformat()
+
+
+def safe_receipt_id(value: str) -> str:
+    receipt_id = clean_run_id(value)
+    if receipt_id != value or not receipt_id:
+        raise HTTPException(status_code=400, detail="receipt_id contains unsupported characters")
+    return receipt_id
+
+
+def receipt_json_path(date: str, receipt_id: str) -> Path:
+    safe_date = validate_receipt_date(date)
+    safe_id = safe_receipt_id(receipt_id)
+    return receipts_dir() / safe_date / f"{safe_id}.json"
+
+
+def read_receipt_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="receipt not found") from exc
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="receipt JSON is invalid") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="receipt JSON must be an object")
+    return data
+
+
+def receipt_summary(json_path: Path) -> dict[str, Any]:
+    data = read_receipt_json(json_path)
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    receipt_id = str(data.get("run_id") or json_path.stem)
+    markdown_path = json_path.with_suffix(".md")
+    usage = metadata.get("usage")
+    return {
+        "receipt_id": receipt_id,
+        "timestamp": data.get("timestamp"),
+        "task": data.get("task"),
+        "requesting_agent": data.get("requesting_agent"),
+        "verdict": data.get("verdict"),
+        "review_required": data.get("review_required"),
+        "route": metadata.get("route"),
+        "requested_model": metadata.get("requested_model"),
+        "model_used": metadata.get("model_used") or data.get("model_used"),
+        "latency_ms": metadata.get("latency_ms"),
+        "usage": usage,
+        "langfuse_trace_id": metadata.get("langfuse_trace_id"),
+        "markdown_path": str(markdown_path),
+        "json_path": str(json_path),
+    }
+
+
+def receipt_json_files_for_date(date: str) -> list[Path]:
+    safe_date = validate_receipt_date(date)
+    date_dir = receipts_dir() / safe_date
+    if not date_dir.exists():
+        return []
+    if not date_dir.is_dir():
+        raise HTTPException(status_code=500, detail="receipt date path is not a directory")
+    return sorted(date_dir.glob("*.json"))
+
+
+def all_receipt_json_files() -> list[Path]:
+    root = receipts_dir()
+    if not root.exists():
+        return []
+    paths: list[Path] = []
+    for date_dir in sorted(root.iterdir(), reverse=True):
+        if date_dir.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_dir.name):
+            paths.extend(sorted(date_dir.glob("*.json"), reverse=True))
+    return paths
+
+
+def sorted_receipt_summaries(paths: list[Path]) -> list[dict[str, Any]]:
+    summaries = [receipt_summary(path) for path in paths]
+    return sorted(
+        summaries,
+        key=lambda item: (str(item.get("timestamp") or ""), str(item.get("receipt_id") or "")),
+        reverse=True,
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -164,6 +251,64 @@ def health() -> dict[str, Any]:
         "service": "homestead-api",
         "version": "0.1.0",
         "repo_path": str(repo_path()),
+    }
+
+
+@app.get("/receipts/recent")
+def receipts_recent(limit: int = 20) -> dict[str, Any]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    summaries = sorted_receipt_summaries(all_receipt_json_files())[:limit]
+    return {"limit": limit, "count": len(summaries), "receipts": summaries}
+
+
+@app.get("/receipts/by-date/{date}")
+def receipts_by_date(date: str) -> dict[str, Any]:
+    safe_date = validate_receipt_date(date)
+    summaries = sorted_receipt_summaries(receipt_json_files_for_date(safe_date))
+    return {"date": safe_date, "count": len(summaries), "receipts": summaries}
+
+
+@app.get("/receipts/stats")
+def receipts_stats() -> dict[str, Any]:
+    summaries = sorted_receipt_summaries(all_receipt_json_files())
+    by_task: dict[str, int] = {}
+    by_verdict: dict[str, int] = {}
+    review_required = 0
+    for summary in summaries:
+        task = str(summary.get("task") or "unknown")
+        verdict = str(summary.get("verdict") or "unknown")
+        by_task[task] = by_task.get(task, 0) + 1
+        by_verdict[verdict] = by_verdict.get(verdict, 0) + 1
+        if summary.get("review_required") is True:
+            review_required += 1
+    return {
+        "total": len(summaries),
+        "by_task": by_task,
+        "by_verdict": by_verdict,
+        "review_required": review_required,
+        "latest_timestamp": summaries[0].get("timestamp") if summaries else None,
+    }
+
+
+@app.get("/receipts/{date}/{receipt_id}")
+def receipt_read(date: str, receipt_id: str) -> dict[str, Any]:
+    safe_date = validate_receipt_date(date)
+    safe_id = safe_receipt_id(receipt_id)
+    json_path = receipt_json_path(safe_date, safe_id)
+    data = read_receipt_json(json_path)
+    markdown_path = json_path.with_suffix(".md")
+    markdown = None
+    if markdown_path.exists():
+        markdown = markdown_path.read_text(encoding="utf-8", errors="replace")
+    return {
+        "receipt_id": safe_id,
+        "date": safe_date,
+        "summary": receipt_summary(json_path),
+        "json": data,
+        "markdown": markdown,
+        "markdown_path": str(markdown_path),
+        "json_path": str(json_path),
     }
 
 
