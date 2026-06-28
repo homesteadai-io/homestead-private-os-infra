@@ -45,6 +45,7 @@ def clear_langfuse_env(monkeypatch):
         "CADDY_HTTPS_PORT",
         "HOMESTEAD_SELF_URL",
         "OPS_POLICY_SURFACE_TOKEN",
+        "HOMESTEAD_STATE_DIR",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -501,6 +502,131 @@ def test_project_context_rejects_non_slug_ids_without_echoing_input(monkeypatch,
     assert response.status_code == 404
     assert response.json()["detail"] == "unknown project"
     assert "secret" not in response.text
+
+
+def test_command_sessions_lifecycle_is_policy_gated_and_manual(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    receipts = tmp_path / "receipts"
+    state = tmp_path / "state"
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
+    monkeypatch.setenv("HOMESTEAD_STATE_DIR", str(state))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+    headers = trusted_codex_headers(monkeypatch)
+
+    denied = client.post(
+        "/commands",
+        headers={"x-homestead-surface": "codex"},
+        json={"title": "Denied command", "created_by": "spoofed-codex"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["operation_type"] == "command"
+    assert denied.json()["detail"]["operation"] == "create"
+    assert not (state / "command-sessions" / "commands.jsonl").exists()
+    assert len(list(receipts.rglob("ops-policy-command-create-*.json"))) == 1
+
+    created = client.post(
+        "/commands",
+        headers=headers,
+        json={
+            "title": "Prepare release handoff",
+            "description": "Operator metadata only",
+            "project_id": "homestead-private-os",
+            "created_by": "codex",
+        },
+    )
+    assert created.status_code == 200
+    command = created.json()["command"]
+    command_id = command["command_id"]
+    assert command_id.startswith("cmd-")
+    assert command["status"] == "new"
+    assert command["autonomous_claim"] is False
+    assert created.json()["events"][0]["policy"]["surface"] == "codex"
+    assert created.json()["events"][0]["policy"]["decision"] == "allow_with_receipt"
+
+    invalid_status = client.patch(
+        f"/commands/{command_id}",
+        headers=headers,
+        json={"status": "running_the_show", "updated_by": "codex"},
+    )
+    assert invalid_status.status_code == 400
+    assert invalid_status.json()["detail"] == "invalid command status"
+
+    started = client.post(
+        "/agent/sessions/start",
+        headers=headers,
+        json={"agent": "codex", "command_id": command_id, "project_id": "homestead-private-os", "note": "manual start"},
+    )
+    assert started.status_code == 200
+    session = started.json()["session"]
+    session_id = session["session_id"]
+    assert session_id.startswith("session-")
+    assert session["status"] == "active"
+    assert session["command_id"] == command_id
+    assert session["autonomous_claim"] is False
+
+    unchanged = client.get(f"/commands/{command_id}")
+    assert unchanged.status_code == 200
+    assert unchanged.json()["command"]["status"] == "new"
+    assert unchanged.json()["command"]["session_id"] is None
+
+    updated = client.patch(
+        f"/commands/{command_id}",
+        headers=headers,
+        json={"status": "working", "session_id": session_id, "updated_by": "codex", "note": "manual link"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["command"]["status"] == "working"
+    assert updated.json()["command"]["session_id"] == session_id
+
+    ended = client.post(
+        "/agent/sessions/end",
+        headers=headers,
+        json={"session_id": session_id, "ended_by": "codex", "outcome": "handoff_ready", "note": "manual end"},
+    )
+    assert ended.status_code == 200
+    assert ended.json()["session"]["status"] == "ended"
+    assert ended.json()["events"][-1]["policy"]["operation_type"] == "session"
+
+    duplicate_end = client.post(
+        "/agent/sessions/end",
+        headers=headers,
+        json={"session_id": session_id, "ended_by": "codex"},
+    )
+    assert duplicate_end.status_code == 409
+
+    commands = client.get("/commands")
+    sessions = client.get("/agent/sessions")
+    boot = client.get("/agent/boot")
+    caps = client.get("/os/capabilities")
+    assert commands.status_code == 200
+    assert commands.json()["count"] == 1
+    assert commands.json()["autonomous_claiming"] is False
+    assert sessions.status_code == 200
+    assert sessions.json()["count"] == 1
+    assert sessions.json()["autonomous_claiming"] is False
+    assert boot.json()["command_sessions"]["commands_total"] == 1
+    assert boot.json()["command_sessions"]["sessions_active"] == 0
+    command_caps = caps.json()["entries"]["command_sessions"]
+    assert command_caps["enabled"] is True
+    assert command_caps["status"] == "manual_only"
+    assert command_caps["autonomous_claiming"] is False
+    assert command_caps["runner_enabled"] is False
+    assert command_caps["scheduler_enabled"] is False
+
+    combined = (
+        denied.text
+        + created.text
+        + started.text
+        + updated.text
+        + ended.text
+        + commands.text
+        + sessions.text
+        + boot.text
+        + caps.text
+    )
+    assert "super-secret-openrouter" not in combined
+    assert POLICY_TOKEN not in combined
 
 
 def test_os_capabilities_registry_is_agent_safe_without_secrets(monkeypatch, tmp_path):

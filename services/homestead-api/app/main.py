@@ -185,6 +185,38 @@ class OpsPolicyCheckRequest(BaseModel):
     surface: str | None = None
 
 
+class CommandCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    project_id: str = "homestead-private-os"
+    created_by: str = "adam"
+    priority: str | None = Field(default=None, max_length=50)
+
+
+class CommandUpdateRequest(BaseModel):
+    status: str | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    project_id: str | None = None
+    session_id: str | None = None
+    note: str | None = Field(default=None, max_length=2000)
+    updated_by: str = "unknown"
+
+
+class SessionStartRequest(BaseModel):
+    agent: str = Field(default="unknown", min_length=1, max_length=120)
+    command_id: str | None = None
+    project_id: str = "homestead-private-os"
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class SessionEndRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    ended_by: str = "unknown"
+    outcome: str | None = Field(default=None, max_length=120)
+    note: str | None = Field(default=None, max_length=2000)
+
+
 def clean_run_id(value: str | None) -> str:
     raw = value or f"run-{uuid4().hex[:12]}"
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-._")
@@ -427,6 +459,8 @@ POLICY_ALLOWED_PROBES = {
     "exposure_config",
     "all",
 }
+POLICY_ALLOWED_COMMANDS = {"create", "update"}
+POLICY_ALLOWED_SESSIONS = {"start", "end"}
 POLICY_UNKNOWN_SURFACE_PROBES = {"node_status"}
 POLICY_SENSITIVE_OPERATIONS = {
     "change_runtime_config",
@@ -517,6 +551,9 @@ PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
     },
 }
 PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+COMMAND_STATUSES = {"new", "claimed", "working", "needs_review", "done", "blocked", "cancelled"}
+COMMAND_ID_RE = re.compile(r"cmd-[a-f0-9]{8}")
+SESSION_ID_RE = re.compile(r"session-[a-f0-9]{8}")
 
 
 def normalize_policy_token(value: str | None) -> str:
@@ -589,24 +626,32 @@ def ops_policy_payload() -> dict[str, Any]:
                 "surface": "codex",
                 "actions": sorted(POLICY_ALLOWED_ACTIONS),
                 "probes": sorted(POLICY_ALLOWED_PROBES),
+                "commands": sorted(POLICY_ALLOWED_COMMANDS),
+                "sessions": sorted(POLICY_ALLOWED_SESSIONS),
                 "decision": "allow_with_receipt",
             },
             {
                 "surface": "mcp",
                 "actions": sorted(POLICY_ALLOWED_ACTIONS),
                 "probes": sorted(POLICY_ALLOWED_PROBES),
+                "commands": sorted(POLICY_ALLOWED_COMMANDS),
+                "sessions": sorted(POLICY_ALLOWED_SESSIONS),
                 "decision": "allow_with_receipt",
             },
             {
                 "surface": "manual_cli",
                 "actions": sorted(POLICY_ALLOWED_ACTIONS),
                 "probes": sorted(POLICY_ALLOWED_PROBES),
+                "commands": sorted(POLICY_ALLOWED_COMMANDS),
+                "sessions": sorted(POLICY_ALLOWED_SESSIONS),
                 "decision": "allow_with_receipt",
             },
             {
                 "surface": "unknown",
                 "actions": [],
                 "probes": sorted(POLICY_UNKNOWN_SURFACE_PROBES),
+                "commands": [],
+                "sessions": [],
                 "decision": "allow_with_receipt",
             },
         ],
@@ -652,8 +697,8 @@ def check_ops_policy_payload(
         http_request=http_request,
     )
 
-    if operation_type not in {"action", "probe"}:
-        raise HTTPException(status_code=400, detail="operation_type must be action or probe")
+    if operation_type not in {"action", "probe", "command", "session"}:
+        raise HTTPException(status_code=400, detail="operation_type must be action, probe, command, or session")
     if operation in POLICY_DISABLED_OPERATIONS:
         return policy_decision_response(
             surface=surface,
@@ -671,9 +716,15 @@ def check_ops_policy_payload(
             reason=f"{operation} changes sensitive runtime state and requires Adam confirmation",
         )
 
-    allowed_operations = POLICY_ALLOWED_ACTIONS if operation_type == "action" else POLICY_ALLOWED_PROBES
+    allowed_by_type = {
+        "action": POLICY_ALLOWED_ACTIONS,
+        "probe": POLICY_ALLOWED_PROBES,
+        "command": POLICY_ALLOWED_COMMANDS,
+        "session": POLICY_ALLOWED_SESSIONS,
+    }
+    allowed_operations = allowed_by_type[operation_type]
     if surface == "unknown":
-        allowed_operations = set() if operation_type == "action" else POLICY_UNKNOWN_SURFACE_PROBES
+        allowed_operations = POLICY_UNKNOWN_SURFACE_PROBES if operation_type == "probe" else set()
 
     if operation in allowed_operations:
         return policy_decision_response(
@@ -895,6 +946,355 @@ def projects_payload() -> dict[str, Any]:
     }
 
 
+def state_dir() -> Path:
+    configured = os.getenv("HOMESTEAD_STATE_DIR", "").strip()
+    if configured:
+        return Path(configured).resolve()
+    return receipts_dir().parent / "state"
+
+
+def command_events_path() -> Path:
+    return state_dir() / "command-sessions" / "commands.jsonl"
+
+
+def session_events_path() -> Path:
+    return state_dir() / "command-sessions" / "sessions.jsonl"
+
+
+def validate_project_id(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if not PROJECT_ID_RE.fullmatch(normalized) or normalized not in PROJECT_REGISTRY:
+        raise HTTPException(status_code=400, detail="project_id must be a known project slug")
+    return normalized
+
+
+def validate_command_id(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if not COMMAND_ID_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="command_id contains unsupported characters")
+    return normalized
+
+
+def validate_session_id(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if not SESSION_ID_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="session_id contains unsupported characters")
+    return normalized
+
+
+def append_jsonl_event(path: Path, event: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def read_jsonl_events(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=500, detail="state event log is invalid") from exc
+            if not isinstance(event, dict):
+                raise HTTPException(status_code=500, detail="state event must be an object")
+            events.append(event)
+    return events
+
+
+def state_event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event_id": f"event-{uuid4().hex[:12]}",
+        "timestamp": utc_now(),
+        "type": event_type,
+        **payload,
+    }
+
+
+def command_from_create_event(event: dict[str, Any]) -> dict[str, Any]:
+    command = dict(event.get("command") or {})
+    command_id = str(event.get("command_id") or command.get("command_id"))
+    created_at = str(event.get("timestamp") or utc_now())
+    return {
+        "command_id": command_id,
+        "title": str(command.get("title") or "Untitled command"),
+        "description": command.get("description"),
+        "project_id": command.get("project_id") or "homestead-private-os",
+        "status": "new",
+        "created_by": command.get("created_by") or "adam",
+        "priority": command.get("priority"),
+        "session_id": None,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "autonomous_claim": False,
+        "events_count": 1,
+        "latest_note": None,
+    }
+
+
+def command_state() -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    commands: dict[str, dict[str, Any]] = {}
+    events_by_command: dict[str, list[dict[str, Any]]] = {}
+    for event in read_jsonl_events(command_events_path()):
+        command_id = str(event.get("command_id") or "")
+        if not command_id:
+            continue
+        events_by_command.setdefault(command_id, []).append(event)
+        if event.get("type") == "command_created":
+            commands[command_id] = command_from_create_event(event)
+            continue
+        if event.get("type") != "command_updated" or command_id not in commands:
+            continue
+        changes = dict(event.get("changes") or {})
+        command = commands[command_id]
+        for field in ["status", "title", "description", "project_id", "session_id"]:
+            if field in changes:
+                command[field] = changes[field]
+        if "note" in changes:
+            command["latest_note"] = changes["note"]
+        command["updated_at"] = str(event.get("timestamp") or utc_now())
+        command["updated_by"] = event.get("updated_by") or "unknown"
+        command["events_count"] = int(command.get("events_count") or 0) + 1
+    return commands, events_by_command
+
+
+def sorted_commands(commands: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(commands.values(), key=lambda item: (str(item.get("updated_at") or ""), str(item.get("command_id"))), reverse=True)
+
+
+def commands_payload() -> dict[str, Any]:
+    commands, _events = command_state()
+    items = sorted_commands(commands)
+    return {
+        "generated_at": utc_now(),
+        "mode": "manual_only",
+        "autonomous_claiming": False,
+        "count": len(items),
+        "commands": items,
+    }
+
+
+def command_read_payload(command_id: str) -> dict[str, Any]:
+    safe_id = validate_command_id(command_id)
+    commands, events = command_state()
+    command = commands.get(safe_id)
+    if not command:
+        raise HTTPException(status_code=404, detail="command not found")
+    return {
+        "generated_at": utc_now(),
+        "command": command,
+        "events": events.get(safe_id, []),
+    }
+
+
+def create_command_payload(request: CommandCreateRequest, policy_decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    project_id = validate_project_id(request.project_id)
+    command_id = f"cmd-{uuid4().hex[:8]}"
+    command = {
+        "command_id": command_id,
+        "title": request.title.strip(),
+        "description": request.description,
+        "project_id": project_id,
+        "created_by": request.created_by,
+        "priority": request.priority,
+    }
+    event_payload: dict[str, Any] = {"command_id": command_id, "command": command}
+    if policy_decision:
+        event_payload["policy"] = policy_receipt_metadata(policy_decision)
+    event = state_event("command_created", event_payload)
+    append_jsonl_event(command_events_path(), event)
+    return command_read_payload(command_id)
+
+
+def update_command_payload(
+    command_id: str,
+    request: CommandUpdateRequest,
+    policy_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    safe_id = validate_command_id(command_id)
+    commands, _events = command_state()
+    if safe_id not in commands:
+        raise HTTPException(status_code=404, detail="command not found")
+
+    changes = request.model_dump(exclude_none=True)
+    changes.pop("updated_by", None)
+    if "status" in changes:
+        status = str(changes["status"]).strip().lower()
+        if status not in COMMAND_STATUSES:
+            raise HTTPException(status_code=400, detail="invalid command status")
+        changes["status"] = status
+    if "project_id" in changes:
+        changes["project_id"] = validate_project_id(str(changes["project_id"]))
+    if "session_id" in changes:
+        session_id = validate_session_id(str(changes["session_id"]))
+        sessions, _session_events = session_state()
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail="session not found")
+        changes["session_id"] = session_id
+    if "title" in changes:
+        changes["title"] = str(changes["title"]).strip()
+    if not changes:
+        raise HTTPException(status_code=400, detail="no command updates provided")
+
+    event_payload: dict[str, Any] = {
+        "command_id": safe_id,
+        "changes": changes,
+        "updated_by": request.updated_by,
+    }
+    if policy_decision:
+        event_payload["policy"] = policy_receipt_metadata(policy_decision)
+    event = state_event(
+        "command_updated",
+        event_payload,
+    )
+    append_jsonl_event(command_events_path(), event)
+    return command_read_payload(safe_id)
+
+
+def session_from_start_event(event: dict[str, Any]) -> dict[str, Any]:
+    session = dict(event.get("session") or {})
+    session_id = str(event.get("session_id") or session.get("session_id"))
+    started_at = str(event.get("timestamp") or utc_now())
+    return {
+        "session_id": session_id,
+        "agent": session.get("agent") or "unknown",
+        "project_id": session.get("project_id") or "homestead-private-os",
+        "command_id": session.get("command_id"),
+        "status": "active",
+        "started_at": started_at,
+        "ended_at": None,
+        "outcome": None,
+        "latest_note": session.get("note"),
+        "autonomous_claim": False,
+        "events_count": 1,
+    }
+
+
+def session_state() -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    sessions: dict[str, dict[str, Any]] = {}
+    events_by_session: dict[str, list[dict[str, Any]]] = {}
+    for event in read_jsonl_events(session_events_path()):
+        session_id = str(event.get("session_id") or "")
+        if not session_id:
+            continue
+        events_by_session.setdefault(session_id, []).append(event)
+        if event.get("type") == "session_started":
+            sessions[session_id] = session_from_start_event(event)
+            continue
+        if event.get("type") != "session_ended" or session_id not in sessions:
+            continue
+        session = sessions[session_id]
+        session["status"] = "ended"
+        session["ended_at"] = str(event.get("timestamp") or utc_now())
+        session["ended_by"] = event.get("ended_by") or "unknown"
+        session["outcome"] = event.get("outcome")
+        if event.get("note") is not None:
+            session["latest_note"] = event.get("note")
+        session["events_count"] = int(session.get("events_count") or 0) + 1
+    return sessions, events_by_session
+
+
+def sorted_sessions(sessions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        sessions.values(),
+        key=lambda item: (str(item.get("ended_at") or item.get("started_at") or ""), str(item.get("session_id"))),
+        reverse=True,
+    )
+
+
+def sessions_payload() -> dict[str, Any]:
+    sessions, _events = session_state()
+    items = sorted_sessions(sessions)
+    return {
+        "generated_at": utc_now(),
+        "mode": "manual_only",
+        "autonomous_claiming": False,
+        "count": len(items),
+        "sessions": items,
+    }
+
+
+def session_read_payload(session_id: str) -> dict[str, Any]:
+    safe_id = validate_session_id(session_id)
+    sessions, events = session_state()
+    session = sessions.get(safe_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {
+        "generated_at": utc_now(),
+        "session": session,
+        "events": events.get(safe_id, []),
+    }
+
+
+def start_session_payload(request: SessionStartRequest, policy_decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    project_id = validate_project_id(request.project_id)
+    command_id = None
+    if request.command_id:
+        command_id = validate_command_id(request.command_id)
+        commands, _events = command_state()
+        if command_id not in commands:
+            raise HTTPException(status_code=404, detail="command not found")
+    session_id = f"session-{uuid4().hex[:8]}"
+    session = {
+        "session_id": session_id,
+        "agent": request.agent,
+        "project_id": project_id,
+        "command_id": command_id,
+        "note": request.note,
+    }
+    event_payload: dict[str, Any] = {"session_id": session_id, "session": session}
+    if policy_decision:
+        event_payload["policy"] = policy_receipt_metadata(policy_decision)
+    event = state_event("session_started", event_payload)
+    append_jsonl_event(session_events_path(), event)
+    return session_read_payload(session_id)
+
+
+def end_session_payload(request: SessionEndRequest, policy_decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    session_id = validate_session_id(request.session_id)
+    sessions, _events = session_state()
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.get("status") == "ended":
+        raise HTTPException(status_code=409, detail="session already ended")
+    event_payload: dict[str, Any] = {
+        "session_id": session_id,
+        "ended_by": request.ended_by,
+        "outcome": request.outcome,
+        "note": request.note,
+    }
+    if policy_decision:
+        event_payload["policy"] = policy_receipt_metadata(policy_decision)
+    event = state_event("session_ended", event_payload)
+    append_jsonl_event(session_events_path(), event)
+    return session_read_payload(session_id)
+
+
+def command_session_summary() -> dict[str, Any]:
+    commands, _command_events = command_state()
+    sessions, _session_events = session_state()
+    active_sessions = [session for session in sessions.values() if session.get("status") == "active"]
+    open_commands = [
+        command
+        for command in commands.values()
+        if command.get("status") not in {"done", "cancelled"}
+    ]
+    return {
+        "commands_total": len(commands),
+        "commands_open": len(open_commands),
+        "sessions_total": len(sessions),
+        "sessions_active": len(active_sessions),
+        "autonomous_claiming": False,
+    }
+
+
 def review_queue_summary(limit: int = 10) -> dict[str, Any]:
     summaries = sorted_receipt_summaries(all_receipt_json_files())
     review_items = [receipt_review_item(summary) for summary in summaries if receipt_review_reasons(summary)]
@@ -940,6 +1340,7 @@ def agent_boot_payload() -> dict[str, Any]:
         "read_first": [
             "/docs/RUNBOOK.md",
             "/docs/ACCEPTANCE-TESTS.md",
+            "/docs/HANDOFF-COMMAND-SESSIONS.md",
             "/docs/HANDOFF-AGENT-BOOT-PROJECTS.md",
             "/docs/HANDOFF-MANUAL-OPS-PROBES.md",
             status["keep_health"]["dir"] + "/homestead-latest.md",
@@ -961,6 +1362,7 @@ def agent_boot_payload() -> dict[str, Any]:
             "catalog": ops,
             "recent": recent_ops,
         },
+        "command_sessions": command_session_summary(),
         "disabled": {
             "runner": capabilities["entries"]["runner"],
             "scheduler_enabled": False,
@@ -1018,6 +1420,32 @@ def capability_registry_payload() -> dict[str, Any]:
             "agent_safe": True,
             "write_access": "none",
             "project_count": len(PROJECT_REGISTRY),
+        },
+        "command_sessions": {
+            "enabled": True,
+            "status": "manual_only",
+            "surface": [
+                "/commands",
+                "/commands/{command_id}",
+                "/agent/sessions/start",
+                "/agent/sessions/end",
+                "/agent/sessions",
+                "/agent/sessions/{session_id}",
+                "homestead.commands_create",
+                "homestead.commands_list",
+                "homestead.commands_read",
+                "homestead.commands_update",
+                "homestead.session_start",
+                "homestead.session_end",
+                "homestead.sessions",
+                "homestead.session_read",
+            ],
+            "agent_safe": True,
+            "write_access": "manual_command_session_events",
+            "autonomous_claiming": False,
+            "runner_enabled": False,
+            "scheduler_enabled": False,
+            "state": command_session_summary(),
         },
         "model_route": {
             "enabled": True,
@@ -1178,6 +1606,14 @@ def os_context_payload() -> dict[str, Any]:
             "homestead.agent_boot",
             "homestead.projects",
             "homestead.project_context",
+            "homestead.commands_create",
+            "homestead.commands_list",
+            "homestead.commands_read",
+            "homestead.commands_update",
+            "homestead.session_start",
+            "homestead.session_end",
+            "homestead.sessions",
+            "homestead.session_read",
             "homestead.ops_policy",
             "homestead.check_ops_policy",
             "homestead.list_manual_ops",
@@ -1704,6 +2140,70 @@ def os_project_context(project_id: str) -> dict[str, Any]:
 @app.get("/os/capabilities")
 def os_capabilities() -> dict[str, Any]:
     return capability_registry_payload()
+
+
+@app.post("/commands")
+def commands_create(request: CommandCreateRequest, http_request: Request) -> dict[str, Any]:
+    decision = enforce_ops_policy(
+        operation_type="command",
+        operation="create",
+        requesting_agent=request.created_by,
+        http_request=http_request,
+    )
+    return create_command_payload(request, decision)
+
+
+@app.get("/commands")
+def commands_list() -> dict[str, Any]:
+    return commands_payload()
+
+
+@app.get("/commands/{command_id}")
+def commands_read(command_id: str) -> dict[str, Any]:
+    return command_read_payload(command_id)
+
+
+@app.patch("/commands/{command_id}")
+def commands_update(command_id: str, request: CommandUpdateRequest, http_request: Request) -> dict[str, Any]:
+    decision = enforce_ops_policy(
+        operation_type="command",
+        operation="update",
+        requesting_agent=request.updated_by,
+        http_request=http_request,
+    )
+    return update_command_payload(command_id, request, decision)
+
+
+@app.post("/agent/sessions/start")
+def agent_session_start(request: SessionStartRequest, http_request: Request) -> dict[str, Any]:
+    decision = enforce_ops_policy(
+        operation_type="session",
+        operation="start",
+        requesting_agent=request.agent,
+        http_request=http_request,
+    )
+    return start_session_payload(request, decision)
+
+
+@app.post("/agent/sessions/end")
+def agent_session_end(request: SessionEndRequest, http_request: Request) -> dict[str, Any]:
+    decision = enforce_ops_policy(
+        operation_type="session",
+        operation="end",
+        requesting_agent=request.ended_by,
+        http_request=http_request,
+    )
+    return end_session_payload(request, decision)
+
+
+@app.get("/agent/sessions")
+def agent_sessions() -> dict[str, Any]:
+    return sessions_payload()
+
+
+@app.get("/agent/sessions/{session_id}")
+def agent_session_read(session_id: str) -> dict[str, Any]:
+    return session_read_payload(session_id)
 
 
 @app.post("/keep/health/sync")
