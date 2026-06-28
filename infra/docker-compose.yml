@@ -10,6 +10,11 @@ services:
       HOMESTEAD_ENV: ${HOMESTEAD_ENV:-local}
       HOMESTEAD_REPO_PATH: ${HOMESTEAD_REPO_PATH:-/workspace/keep}
       RECEIPTS_DIR: ${RECEIPTS_DIR:-/data/receipts}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_DEFAULT_MODEL: ${OPENROUTER_DEFAULT_MODEL:-}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-Homestead Private OS}
     volumes:
       - ${KEEP_REPO_HOST_PATH:-../}:/workspace/keep
       - ${HOMESTEAD_DATA_PATH:-../data}:/data

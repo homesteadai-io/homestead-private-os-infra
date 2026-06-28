@@ -47,22 +47,17 @@ The live v0 node keeps existing Nginx on public `80/443`, so Homestead Caddy bin
 
 Set `CADDY_HTTP_BIND` and `CADDY_HTTPS_BIND` to the server's Tailscale IP for direct tailnet access, or to `0.0.0.0` only for intentional public exposure.
 
-## OpenRouter Stub
+## OpenRouter
 
-These are placeholders in v0 and become active in Task 3:
+These power `/model/route` through OpenRouter. Keep real values only in local/server env files, never in git.
 
 | Variable | Purpose |
 |---|---|
 | `OPENROUTER_API_KEY` | OpenRouter key |
 | `OPENROUTER_BASE_URL` | OpenRouter API base URL |
 | `OPENROUTER_DEFAULT_MODEL` | default model route |
-
-Task 3 will add:
-
-| Variable | Purpose |
-|---|---|
-| `OPENROUTER_HTTP_REFERER` | OpenRouter app attribution |
-| `OPENROUTER_APP_TITLE` | OpenRouter app title |
+| `OPENROUTER_HTTP_REFERER` | value sent in the `HTTP-Referer` attribution header |
+| `OPENROUTER_APP_TITLE` | value sent in the `X-OpenRouter-Title` attribution header |
 
 ## Future Placeholders
 

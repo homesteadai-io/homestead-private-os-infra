@@ -300,18 +300,39 @@ result.latest_commit
 result.dirty
 ```
 
-## 11. Confirm No v0 Scope Creep
+## 11. OpenRouter Model Route Works
 
-These should not exist yet:
+Run on Hetzner without printing secret values:
 
 ```bash
-curl -i https://api.homesteadai.io/model/route
+grep -E '^(OPENROUTER_API_KEY|OPENROUTER_BASE_URL|OPENROUTER_DEFAULT_MODEL|OPENROUTER_HTTP_REFERER|OPENROUTER_APP_TITLE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
 ```
 
 Expected:
 
 ```text
-404 Not Found
+OPENROUTER_API_KEY=<set>
+OPENROUTER_BASE_URL=<set>
+OPENROUTER_DEFAULT_MODEL=<set>
+OPENROUTER_HTTP_REFERER=<set>
+OPENROUTER_APP_TITLE=<set>
+```
+
+From Adam's laptop while signed into the same tailnet:
+
+```powershell
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"prompt":"Say hello from Homestead in one sentence.","max_tokens":80}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/model/route -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+```
+
+Expected:
+
+```text
+content
+model
+finish_reason
 ```
 
 ## 12. Private Exposure Check
@@ -352,6 +373,11 @@ Remove-Item -LiteralPath $tmp
 $tmp = New-TemporaryFile
 Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"tool":"homestead.repo_status","arguments":{}}'
 curl.exe --max-time 10 -X POST http://<tailscale-ip>:8088/mcp/call -H "Content-Type: application/json" --data-binary "@$tmp"
+Remove-Item -LiteralPath $tmp
+
+$tmp = New-TemporaryFile
+Set-Content -LiteralPath $tmp -NoNewline -Encoding utf8 -Value '{"prompt":"Say hello from Homestead in one sentence.","max_tokens":80}'
+curl.exe --max-time 60 -X POST http://<tailscale-ip>:8088/model/route -H "Content-Type: application/json" --data-binary "@$tmp"
 Remove-Item -LiteralPath $tmp
 ```
 

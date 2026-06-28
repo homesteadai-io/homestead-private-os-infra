@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -140,6 +141,14 @@ class ReceiptRequest(BaseModel):
     verdict: str = "recorded"
 
 
+class ModelRouteRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    system: str | None = None
+    model: str | None = None
+    max_tokens: int = Field(default=256, ge=1, le=4096)
+    temperature: float = Field(default=0.2, ge=0, le=2)
+
+
 def clean_run_id(value: str | None) -> str:
     raw = value or f"run-{uuid4().hex[:12]}"
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-._")
@@ -227,6 +236,113 @@ def context_pack(request: ContextPackRequest) -> dict[str, Any]:
         "task": request.task,
         "generated_at": utc_now(),
         "files": found["results"],
+    }
+
+
+def openrouter_config() -> dict[str, str]:
+    api_key = normalize_api_key(os.getenv("OPENROUTER_API_KEY", ""))
+    values = {
+        "api_key": api_key,
+        "base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip(),
+        "default_model": os.getenv("OPENROUTER_DEFAULT_MODEL", "").strip(),
+        "http_referer": os.getenv("OPENROUTER_HTTP_REFERER", "").strip(),
+        "app_title": os.getenv("OPENROUTER_APP_TITLE", "Homestead Private OS").strip(),
+    }
+    missing = [
+        name
+        for name, value in {
+            "OPENROUTER_API_KEY": values["api_key"],
+            "OPENROUTER_BASE_URL": values["base_url"],
+            "OPENROUTER_DEFAULT_MODEL": values["default_model"],
+            "OPENROUTER_HTTP_REFERER": values["http_referer"],
+            "OPENROUTER_APP_TITLE": values["app_title"],
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise HTTPException(status_code=503, detail={"error": "OpenRouter is not configured", "missing": missing})
+    return values
+
+
+def normalize_api_key(value: str) -> str:
+    key = value.strip().strip("\"'")
+    if "=" in key and key.split("=", 1)[0].strip() == "OPENROUTER_API_KEY":
+        key = key.split("=", 1)[1].strip().strip("\"'")
+    if ":" in key and key.split(":", 1)[0].strip().lower() == "authorization":
+        key = key.split(":", 1)[1].strip().strip("\"'")
+    return key
+
+
+def bearer_header(api_key: str) -> str:
+    if api_key.lower().startswith("bearer "):
+        return api_key
+    return f"Bearer {api_key}"
+
+
+@app.post("/model/route")
+async def model_route(request: ModelRouteRequest) -> dict[str, Any]:
+    config = openrouter_config()
+    model = request.model or config["default_model"]
+    messages: list[dict[str, str]] = []
+    if request.system:
+        messages.append({"role": "system", "content": request.system})
+    messages.append({"role": "user", "content": request.prompt})
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": request.max_tokens,
+        "temperature": request.temperature,
+    }
+    headers = {
+        "Authorization": bearer_header(config["api_key"]),
+        "Content-Type": "application/json",
+        "HTTP-Referer": config["http_referer"],
+        "X-OpenRouter-Title": config["app_title"],
+    }
+    url = f"{config['base_url'].rstrip('/')}/chat/completions"
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, headers=headers, json=payload)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="OpenRouter request timed out") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="OpenRouter request failed") from exc
+
+    if response.status_code >= 400:
+        message = "OpenRouter returned an error"
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                error = body.get("error")
+                if isinstance(error, dict) and isinstance(error.get("message"), str):
+                    message = error["message"]
+        except ValueError:
+            pass
+        raise HTTPException(status_code=502, detail={"error": message, "upstream_status": response.status_code})
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="OpenRouter returned invalid JSON") from exc
+
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise HTTPException(status_code=502, detail="OpenRouter returned no choices")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise HTTPException(status_code=502, detail="OpenRouter returned an invalid choice")
+    message = first.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise HTTPException(status_code=502, detail="OpenRouter returned no assistant content")
+
+    return {
+        "model": data.get("model") or model,
+        "content": content,
+        "finish_reason": first.get("finish_reason"),
+        "usage": data.get("usage"),
     }
 
 

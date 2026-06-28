@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+/.env.example
 *.key
 *.pem
 *.p12
@@ -33,4 +34,3 @@ desktop.ini
 .vscode/
 *.swp
 *~
-

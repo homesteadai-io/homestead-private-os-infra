@@ -41,11 +41,12 @@ AAAA  node.homesteadai.io    <hetzner-ipv6>
 | `https://mcp.homesteadai.io/*` | `homestead-mcp:8010` |
 | `https://node.homesteadai.io/health` | `homestead-api:8000/health` |
 | `https://node.homesteadai.io/api/*` | `homestead-api:8000/*` |
+| `https://node.homesteadai.io/model/*` | `homestead-api:8000/model/*` |
 | `https://node.homesteadai.io/mcp/*` | `homestead-mcp:8010/*` |
 
 ## Public Exposure Warning
 
-v0 assumes private access through Tailscale. If these records point at the public Hetzner IP, the API and MCP facade are reachable from the public internet unless the firewall, Tailscale, or another access layer blocks them.
+v0 assumes private access through Tailscale. If these records point at the public Hetzner IP, the API, model route, and MCP facade are reachable from the public internet unless the firewall, Tailscale, or another access layer blocks them.
 
 The Docker Compose default binds Caddy to `127.0.0.1` only:
 
