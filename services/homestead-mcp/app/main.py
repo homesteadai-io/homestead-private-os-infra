@@ -15,6 +15,7 @@ PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 COMMAND_ID_RE = re.compile(r"cmd-[a-f0-9]{8}")
 SESSION_ID_RE = re.compile(r"session-[a-f0-9]{8}")
 OUTPUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*--\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*")
+CONCEPT_ID_RE = re.compile(r"concept-[a-z0-9-]+-[a-f0-9]{8}")
 
 TOOLS = [
     {
@@ -31,6 +32,21 @@ TOOLS = [
         "name": "homestead.build_context_pack",
         "description": "Return relevant markdown paths and snippets for a task.",
         "input_schema": {"task": "string", "max_files": "integer optional"},
+    },
+    {
+        "name": "homestead.keep_concepts",
+        "description": "List read-only Keep concept summaries with stable concept IDs.",
+        "input_schema": {"project_id": "string optional", "limit": "integer optional"},
+    },
+    {
+        "name": "homestead.keep_concept_search",
+        "description": "Search read-only Keep concepts and return stable concept IDs.",
+        "input_schema": {"query": "string", "project_id": "string optional", "max_results": "integer optional"},
+    },
+    {
+        "name": "homestead.keep_concept_read",
+        "description": "Read one Keep concept by stable concept ID.",
+        "input_schema": {"concept_id": "string"},
     },
     {
         "name": "homestead.repo_status",
@@ -309,6 +325,28 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         return await api_request("POST", "/read-concept", arguments)
     if tool == "homestead.build_context_pack":
         return await api_request("POST", "/context-pack", arguments)
+    if tool == "homestead.keep_concepts":
+        query = []
+        project_id = arguments.get("project_id")
+        if project_id is not None:
+            if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(project_id.strip().lower()):
+                raise HTTPException(status_code=400, detail="project_id must be a slug")
+            query.append(f"project_id={quote(project_id.strip().lower(), safe='')}")
+        if "limit" in arguments:
+            try:
+                limit = int(arguments.get("limit"))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="limit must be an integer") from exc
+            query.append(f"limit={limit}")
+        suffix = "?" + "&".join(query) if query else ""
+        return await api_request("GET", f"/keep/concepts{suffix}")
+    if tool == "homestead.keep_concept_search":
+        return await api_request("POST", "/keep/concepts/search", arguments)
+    if tool == "homestead.keep_concept_read":
+        concept_id = arguments.get("concept_id")
+        if not isinstance(concept_id, str) or not CONCEPT_ID_RE.fullmatch(concept_id):
+            raise HTTPException(status_code=400, detail="concept_id is required")
+        return await api_request("GET", f"/keep/concepts/{quote(concept_id, safe='')}")
     if tool == "homestead.repo_status":
         return await api_request("GET", "/repo/status")
     if tool == "homestead.create_receipt":

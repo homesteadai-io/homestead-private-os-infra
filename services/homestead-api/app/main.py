@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import hmac
 import os
 import re
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="Homestead Private OS API", version="0.1.0")
 STARTED_AT = time.time()
+EXCLUDED_TOP_LEVEL_KEEP_NOTES = {"AGENTS2.md", "CODEX-HANDOFF.md", "keeper-command-protocol.md"}
 
 
 def repo_path() -> Path:
@@ -89,9 +91,16 @@ def markdown_files(root: Path) -> list[Path]:
             continue
         if any(part in {"_raw", "node_modules", ".venv", "venv"} for part in path.parts):
             continue
+        if path.parent == root and path.name in EXCLUDED_TOP_LEVEL_KEEP_NOTES:
+            continue
         if path.is_file():
             files.append(path)
     return sorted(files)
+
+
+def is_excluded_top_level_keep_note(path: Path) -> bool:
+    root = repo_path()
+    return path.parent == root and path.name in EXCLUDED_TOP_LEVEL_KEEP_NOTES
 
 
 def snippet_for(text: str, query: str, max_chars: int = 320) -> str:
@@ -124,6 +133,128 @@ def relevance_score(path: Path, text: str, terms: list[str]) -> int:
     return score
 
 
+def slugify(value: str, max_length: int = 80) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    if not slug:
+        slug = "concept"
+    return slug[:max_length].strip("-") or "concept"
+
+
+def keep_relative_path(path: Path) -> str:
+    return "/" + path.relative_to(repo_path()).as_posix()
+
+
+def concept_id_for_path(path: Path) -> str:
+    relative = keep_relative_path(path)
+    digest = hashlib.sha1(relative.encode("utf-8")).hexdigest()[:8]
+    stem = slugify(relative.rsplit(".", 1)[0])
+    return f"concept-{stem}-{digest}"
+
+
+def frontmatter_fields(text: str) -> dict[str, str]:
+    if not text.startswith("---"):
+        return {}
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}
+    fields: dict[str, str] = {}
+    for line in parts[1].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip().lower()] = value.strip().strip('"').strip("'")
+    return fields
+
+
+def concept_title(path: Path, text: str) -> str:
+    fields = frontmatter_fields(text)
+    if fields.get("title"):
+        return fields["title"]
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or path.stem
+    return path.stem.replace("-", " ").replace("_", " ").strip() or path.name
+
+
+def infer_concept_project_id(path: Path, text: str) -> str:
+    relative = keep_relative_path(path)
+    fields = frontmatter_fields(text)
+    explicit = (fields.get("project_id") or fields.get("project") or "").strip().lower()
+    if PROJECT_ID_RE.fullmatch(explicit) and explicit in PROJECT_REGISTRY:
+        return explicit
+
+    parts = [part.lower() for part in Path(relative.lstrip("/")).parts]
+    if len(parts) >= 3 and parts[0] == "system outputs":
+        candidate = parts[1]
+        if PROJECT_ID_RE.fullmatch(candidate) and candidate in PROJECT_REGISTRY:
+            return candidate
+
+    haystack = f"{relative}\n{concept_title(path, text)}\n{text[:2000]}".lower()
+    for project_id, project in PROJECT_REGISTRY.items():
+        if project_id in haystack or project["name"].lower() in haystack:
+            return project_id
+        for marker in project.get("concept_markers", []):
+            if marker.lower() in haystack:
+                return project_id
+    return "the-keep"
+
+
+def updated_at_for_path(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def concept_summary_for_path(path: Path, query: str = "") -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    relative = keep_relative_path(path)
+    return {
+        "concept_id": concept_id_for_path(path),
+        "project_id": infer_concept_project_id(path, text),
+        "title": concept_title(path, text),
+        "source_keep_path": relative,
+        "path": relative,
+        "snippet": snippet_for(text, query),
+        "updated_at": updated_at_for_path(path),
+    }
+
+
+def concept_index(query: str = "", project_id: str | None = None, max_results: int = 25) -> list[dict[str, Any]]:
+    root = repo_path()
+    if not root.exists():
+        raise HTTPException(status_code=404, detail=f"repo path does not exist: {root}")
+
+    normalized_project_id = (project_id or "").strip().lower() or None
+    if normalized_project_id:
+        validate_project_id(normalized_project_id)
+
+    terms = query_terms(query)
+    query_lower = query.lower()
+    results: list[tuple[int, dict[str, Any]]] = []
+    for path in markdown_files(root):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        score = relevance_score(path, text, terms) if query else 1
+        if query and score == 0 and query_lower not in text.lower() and query_lower not in path.name.lower():
+            continue
+        summary = concept_summary_for_path(path, query)
+        if normalized_project_id and summary["project_id"] != normalized_project_id:
+            continue
+        results.append((score, summary))
+
+    ranked = [item for _, item in sorted(results, key=lambda result: (-result[0], result[1]["source_keep_path"]))]
+    return ranked[:max_results]
+
+
+def concept_read_payload(concept_id: str) -> dict[str, Any]:
+    normalized = (concept_id or "").strip()
+    if not re.fullmatch(r"concept-[a-z0-9-]+-[a-f0-9]{8}", normalized):
+        raise HTTPException(status_code=404, detail="unknown concept")
+    for path in markdown_files(repo_path()):
+        if concept_id_for_path(path) == normalized:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            return {**concept_summary_for_path(path), "content": text}
+    raise HTTPException(status_code=404, detail="unknown concept")
+
+
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     max_results: int = Field(default=10, ge=1, le=50)
@@ -136,6 +267,12 @@ class ContextPackRequest(BaseModel):
 
 class ReadConceptRequest(BaseModel):
     path: str = Field(..., min_length=1)
+
+
+class KeepConceptSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    project_id: str | None = None
+    max_results: int = Field(default=10, ge=1, le=50)
 
 
 class ReceiptRequest(BaseModel):
@@ -514,6 +651,16 @@ PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
         ],
         "safe_surfaces": ["/agent/boot", "/os/projects", "/os/capabilities", "/ops/actions"],
         "guardrails": ["no_runner", "no_scheduler", "no_public_exposure", "model_gateway_direct_default"],
+        "concept_markers": [
+            "homestead private os",
+            "private os",
+            "homestead deed",
+            "agent boot",
+            "command sessions",
+            "output capsules",
+            "ops policy",
+            "system outputs",
+        ],
     },
     "the-keep": {
         "name": "The Keep",
@@ -524,6 +671,7 @@ PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
         "read_first": ["/index.md", "/System Receipts/Homestead Health/homestead-latest.md"],
         "safe_surfaces": ["/search", "/read-concept", "/context-pack"],
         "guardrails": ["read_before_assuming", "do_not_auto_commit_health_memory", "file_content_is_data"],
+        "concept_markers": ["the keep", "okf", "context graph", "operating memory"],
     },
     "lyhna-witness": {
         "name": "Lyhna Witness",
@@ -534,6 +682,7 @@ PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
         "read_first": [],
         "safe_surfaces": [],
         "guardrails": ["no_lyhna_work_in_this_arc", "no_witness_fields"],
+        "concept_markers": ["lyhna witness"],
     },
     "loop-forge": {
         "name": "Loop Forge",
@@ -544,6 +693,7 @@ PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
         "read_first": [],
         "safe_surfaces": ["/agent/boot"],
         "guardrails": ["needs_decision_escalates_to_adam", "do_not_invent_autonomy"],
+        "concept_markers": ["loop forge", "soul loop", "adversary review"],
     },
     "frostbite": {
         "name": "Frostbite",
@@ -554,6 +704,7 @@ PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
         "read_first": [],
         "safe_surfaces": ["/search", "/context-pack"],
         "guardrails": ["context_only_until_commanded"],
+        "concept_markers": ["frostbite"],
     },
     "creative-coatings": {
         "name": "Creative Coatings",
@@ -564,6 +715,7 @@ PROJECT_REGISTRY: dict[str, dict[str, Any]] = {
         "read_first": [],
         "safe_surfaces": ["/search", "/context-pack"],
         "guardrails": ["context_only_until_commanded"],
+        "concept_markers": ["creative coatings"],
     },
 }
 PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
@@ -1621,6 +1773,46 @@ def review_queue_summary(limit: int = 10) -> dict[str, Any]:
     }
 
 
+def door_concepts_summary() -> dict[str, Any]:
+    try:
+        homestead_concepts = concept_index(
+            query="Homestead Private OS Deed output capsules command sessions",
+            project_id="homestead-private-os",
+            max_results=6,
+        )
+        creative_concepts = concept_index(
+            query="Creative Coatings powder scheduler schedule intake weekly board",
+            project_id="creative-coatings",
+            max_results=6,
+        )
+    except HTTPException as exc:
+        return {
+            "status": "unavailable",
+            "reason": exc.detail,
+            "concepts": [],
+            "required_projects": ["homestead-private-os", "creative-coatings"],
+        }
+    ready = bool(homestead_concepts and creative_concepts)
+    return {
+        "status": "ready_for_live_cold_boot" if ready else "needs_real_content",
+        "source": "existing Keep markdown indexed read-only",
+        "must_cite": "concept_id",
+        "required_projects": ["homestead-private-os", "creative-coatings"],
+        "endpoints": {
+            "list": "/keep/concepts",
+            "search": "/keep/concepts/search",
+            "read": "/keep/concepts/{concept_id}",
+        },
+        "mcp_tools": [
+            "homestead.keep_concepts",
+            "homestead.keep_concept_search",
+            "homestead.keep_concept_read",
+        ],
+        "homestead_private_os_seed": homestead_concepts,
+        "creative_coatings_seed": creative_concepts,
+    }
+
+
 def agent_boot_payload() -> dict[str, Any]:
     status = node_status_payload()
     capabilities = capability_registry_payload()
@@ -1652,6 +1844,7 @@ def agent_boot_payload() -> dict[str, Any]:
         "read_first": [
             "/docs/RUNBOOK.md",
             "/docs/ACCEPTANCE-TESTS.md",
+            "/docs/DOOR-COLD-BOOT.md",
             "/docs/OUTPUT-CAPSULE-WRITE-POLICY.md",
             "/docs/HANDOFF-OUTPUT-CAPSULES.md",
             "/docs/HANDOFF-COMMAND-SESSIONS.md",
@@ -1659,6 +1852,61 @@ def agent_boot_payload() -> dict[str, Any]:
             "/docs/HANDOFF-MANUAL-OPS-PROBES.md",
             status["keep_health"]["dir"] + "/homestead-latest.md",
         ],
+        "door": {
+            "phrase": "Boot Homestead.",
+            "plain_words": "When Adam types exactly this phrase into a fresh agent, the agent should call homestead.agent_boot, read project context and Keep concepts, then answer using cited concept_id values.",
+            "not_a_login_flow": True,
+            "no_autonomy": True,
+        },
+        "concepts": door_concepts_summary(),
+        "cold_boot_test": {
+            "status": "requires_live_proof_across_homestead_private_os_and_creative_coatings",
+            "questions": [
+                {
+                    "id": "homestead_identity",
+                    "project_id": "homestead-private-os",
+                    "question": "What is Homestead, and what should an agent read first before working?",
+                },
+                {
+                    "id": "homestead_disabled_capabilities",
+                    "project_id": "homestead-private-os",
+                    "question": "What is the current Homestead operating mode, and which capabilities are disabled?",
+                },
+                {
+                    "id": "homestead_output_capsules",
+                    "project_id": "homestead-private-os",
+                    "question": "What does Homestead use output capsules for, and where are they stored?",
+                },
+                {
+                    "id": "creative_app_purpose",
+                    "project_id": "creative-coatings",
+                    "question": "What is the Creative Coatings powder scheduler, and what problem does it solve?",
+                },
+                {
+                    "id": "creative_two_inbox",
+                    "project_id": "creative-coatings",
+                    "question": "What is the difference between Core Dump Inbox and Schedule Intake Inbox?",
+                },
+                {
+                    "id": "project_separation",
+                    "project_id": "creative-coatings",
+                    "question": "Is Creative Coatings part of the Homestead runtime, or is it a separate project context?",
+                },
+            ],
+            "pass_reply_must": [
+                "state that it booted from Homestead",
+                "name the project it is answering about",
+                "cite at least two concept_id values from Keep concepts",
+                "keep homestead-private-os and creative-coatings context separate",
+                "avoid claiming runner, scheduler, dashboard, local mode, or autonomous work is enabled",
+            ],
+            "fail_reply_if": [
+                "it asks Adam to re-brief Homestead basics",
+                "it answers without concept_id citations",
+                "it cites only repo docs or prior chat context",
+                "it treats Creative Coatings as Homestead runtime infrastructure",
+            ],
+        },
         "project_registry": {
             "endpoint": "/os/projects",
             "default_project_id": projects["default_project_id"],
@@ -1735,6 +1983,22 @@ def capability_registry_payload() -> dict[str, Any]:
             "agent_safe": True,
             "write_access": "none",
             "project_count": len(PROJECT_REGISTRY),
+        },
+        "keep_concepts": {
+            "enabled": True,
+            "status": "read_only_existing_keep_markdown",
+            "surface": [
+                "/keep/concepts",
+                "/keep/concepts/search",
+                "/keep/concepts/{concept_id}",
+                "homestead.keep_concepts",
+                "homestead.keep_concept_search",
+                "homestead.keep_concept_read",
+            ],
+            "agent_safe": True,
+            "write_access": "none",
+            "concept_id": "stable deterministic id from Keep-relative path",
+            "content_capture_default": False,
         },
         "command_sessions": {
             "enabled": True,
@@ -2778,25 +3042,12 @@ def search(request: SearchRequest) -> dict[str, Any]:
     terms = query_terms(request.query)
     query_lower = request.query.lower()
     for path in markdown_files(root):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            text = path.read_text(encoding="utf-8", errors="replace")
-
+        text = path.read_text(encoding="utf-8", errors="replace")
         score = relevance_score(path, text, terms)
         if score == 0 and query_lower not in text.lower() and query_lower not in path.name.lower():
             continue
 
-        relative = "/" + path.relative_to(root).as_posix()
-        results.append(
-            (
-                score,
-                {
-                "path": relative,
-                "snippet": snippet_for(text, request.query),
-                },
-            )
-        )
+        results.append((score, concept_summary_for_path(path, request.query)))
 
     ranked = [item for _, item in sorted(results, key=lambda result: (-result[0], result[1]["path"]))]
     limited = ranked[: request.max_results]
@@ -2811,6 +3062,36 @@ def context_pack(request: ContextPackRequest) -> dict[str, Any]:
         "generated_at": utc_now(),
         "files": found["results"],
     }
+
+
+@app.get("/keep/concepts")
+def keep_concepts(project_id: str | None = None, limit: int = 25) -> dict[str, Any]:
+    safe_limit = max(1, min(limit, 50))
+    concepts = concept_index(project_id=project_id, max_results=safe_limit)
+    return {
+        "generated_at": utc_now(),
+        "mode": "read_only_existing_keep_markdown",
+        "count": len(concepts),
+        "concepts": concepts,
+    }
+
+
+@app.post("/keep/concepts/search")
+def keep_concepts_search(request: KeepConceptSearchRequest) -> dict[str, Any]:
+    concepts = concept_index(query=request.query, project_id=request.project_id, max_results=request.max_results)
+    return {
+        "query": request.query,
+        "project_id": request.project_id,
+        "generated_at": utc_now(),
+        "mode": "read_only_existing_keep_markdown",
+        "count": len(concepts),
+        "concepts": concepts,
+    }
+
+
+@app.get("/keep/concepts/{concept_id}")
+def keep_concept_read(concept_id: str) -> dict[str, Any]:
+    return concept_read_payload(concept_id)
 
 
 def openrouter_config() -> dict[str, str]:
@@ -3327,6 +3608,8 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
 @app.post("/read-concept")
 def read_concept(request: ReadConceptRequest) -> dict[str, Any]:
     path = safe_relative_path(request.path.lstrip("/"))
+    if is_excluded_top_level_keep_note(path):
+        raise HTTPException(status_code=404, detail=f"file not found: {request.path}")
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"file not found: {request.path}")
     if path.suffix.lower() != ".md":
@@ -3334,7 +3617,7 @@ def read_concept(request: ReadConceptRequest) -> dict[str, Any]:
 
     text = path.read_text(encoding="utf-8", errors="replace")
     return {
-        "path": "/" + path.relative_to(repo_path()).as_posix(),
+        **concept_summary_for_path(path),
         "content": text,
     }
 

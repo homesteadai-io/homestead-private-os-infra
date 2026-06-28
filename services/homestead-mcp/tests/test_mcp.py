@@ -17,6 +17,9 @@ def test_tools_surface_lists_required_homestead_tools():
     assert "homestead.search_keep" in names
     assert "homestead.read_concept" in names
     assert "homestead.build_context_pack" in names
+    assert "homestead.keep_concepts" in names
+    assert "homestead.keep_concept_search" in names
+    assert "homestead.keep_concept_read" in names
     assert "homestead.repo_status" in names
     assert "homestead.create_receipt" in names
     assert "homestead.list_recent_receipts" in names
@@ -324,3 +327,65 @@ def test_output_read_rejects_bad_output_id():
     assert missing.json()["detail"] == "output_id is required"
     assert bad.status_code == 400
     assert bad.json()["detail"] == "output_id contains unsupported characters"
+
+
+def test_keep_concept_tools_dispatch_to_api(monkeypatch):
+    calls = []
+
+    async def fake_api_request(method, path, json_body=None):
+        calls.append((method, path, json_body))
+        return {"ok": True, "path": path}
+
+    monkeypatch.setattr(main, "api_request", fake_api_request)
+
+    list_concepts = client.post(
+        "/call",
+        json={"tool": "homestead.keep_concepts", "arguments": {"project_id": "homestead-private-os", "limit": 5}},
+    )
+    search = client.post(
+        "/call",
+        json={
+            "tool": "homestead.keep_concept_search",
+            "arguments": {"query": "output capsules", "project_id": "homestead-private-os", "max_results": 3},
+        },
+    )
+    read = client.post(
+        "/call",
+        json={"tool": "homestead.keep_concept_read", "arguments": {"concept_id": "concept-index-1234abcd"}},
+    )
+
+    assert list_concepts.status_code == 200
+    assert search.status_code == 200
+    assert read.status_code == 200
+    assert calls == [
+        ("GET", "/keep/concepts?project_id=homestead-private-os&limit=5", None),
+        (
+            "POST",
+            "/keep/concepts/search",
+            {"query": "output capsules", "project_id": "homestead-private-os", "max_results": 3},
+        ),
+        ("GET", "/keep/concepts/concept-index-1234abcd", None),
+    ]
+
+
+def test_keep_concept_read_rejects_bad_concept_id():
+    missing = client.post("/call", json={"tool": "homestead.keep_concept_read", "arguments": {}})
+    bad = client.post(
+        "/call",
+        json={"tool": "homestead.keep_concept_read", "arguments": {"concept_id": "concept/bad"}},
+    )
+
+    assert missing.status_code == 400
+    assert missing.json()["detail"] == "concept_id is required"
+    assert bad.status_code == 400
+    assert bad.json()["detail"] == "concept_id is required"
+
+
+def test_keep_concepts_rejects_bad_limit():
+    bad = client.post(
+        "/call",
+        json={"tool": "homestead.keep_concepts", "arguments": {"limit": "many"}},
+    )
+
+    assert bad.status_code == 400
+    assert bad.json()["detail"] == "limit must be an integer"
