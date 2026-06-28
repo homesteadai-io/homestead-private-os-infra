@@ -464,6 +464,10 @@ def test_os_capabilities_registry_is_agent_safe_without_secrets(monkeypatch, tmp
     assert entries["model_route"]["enabled"] is True
     assert entries["direct_openrouter_gateway"]["status"] == "production_default"
     assert entries["litellm_gateway"]["status"] == "available_private_optional"
+    assert entries["ops_policy_gate"]["enabled"] is True
+    assert entries["ops_policy_gate"]["default_decision"] == "deny"
+    assert entries["ops_policy_gate"]["scheduler_enabled"] is False
+    assert entries["ops_policy_gate"]["autonomous_execution"] is False
     assert entries["review_queue"]["surface"] == ["/receipts/review", "homestead.receipts_review"]
     assert entries["keep_health_sync"]["policy"]["content_policy"]["secret_values"] == "never_write"
     assert entries["local_mode"]["enabled"] is False
@@ -485,6 +489,8 @@ def test_manual_ops_catalog_and_capability_registry(monkeypatch, tmp_path):
 
     assert catalog.status_code == 200
     assert catalog.json()["mode"] == "manual_only"
+    assert catalog.json()["policy_gate_enabled"] is True
+    assert catalog.json()["policy"]["default_decision"] == "deny"
     assert catalog.json()["scheduler_enabled"] is False
     assert catalog.json()["runner_enabled"] is False
     assert "sync_keep_health" in catalog.json()["actions"]
@@ -492,8 +498,58 @@ def test_manual_ops_catalog_and_capability_registry(monkeypatch, tmp_path):
     assert caps.status_code == 200
     manual_ops = caps.json()["entries"]["manual_ops"]
     assert manual_ops["status"] == "manual_only"
+    assert manual_ops["policy_gate"] == "required"
     assert manual_ops["scheduler_enabled"] is False
     assert manual_ops["autonomous_execution"] is False
+
+
+def test_ops_policy_surface_and_policy_check(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-openrouter")
+
+    policy = client.get("/ops/policy")
+    allowed = client.post(
+        "/ops/policy/check",
+        json={
+            "operation_type": "probe",
+            "operation": "node_status",
+            "requesting_agent": "codex-policy-test",
+        },
+    )
+    denied = client.post(
+        "/ops/policy/check",
+        json={
+            "operation_type": "action",
+            "operation": "turn_on_runner",
+            "requesting_agent": "unknown",
+        },
+    )
+    needs_confirmation = client.post(
+        "/ops/policy/check",
+        json={
+            "operation_type": "action",
+            "operation": "change_runtime_config",
+            "requesting_agent": "codex-policy-test",
+        },
+    )
+
+    assert policy.status_code == 200
+    assert policy.json()["default_decision"] == "deny"
+    assert policy.json()["mode"] == "manual_only"
+    assert allowed.status_code == 200
+    assert allowed.json()["decision"] == "allow_with_receipt"
+    assert allowed.json()["ok"] is True
+    assert allowed.json()["receipt_required"] is True
+    assert denied.status_code == 200
+    assert denied.json()["decision"] == "deny"
+    assert denied.json()["ok"] is False
+    assert needs_confirmation.status_code == 200
+    assert needs_confirmation.json()["decision"] == "needs_confirmation"
+    assert needs_confirmation.json()["requires_confirmation"] is True
+    combined = policy.text + allowed.text + denied.text + needs_confirmation.text
+    assert "super-secret-openrouter" not in combined
 
 
 def test_manual_action_refresh_node_status_writes_receipt(monkeypatch, tmp_path):
@@ -507,7 +563,7 @@ def test_manual_action_refresh_node_status_writes_receipt(monkeypatch, tmp_path)
         "/ops/actions/run",
         json={
             "action": "refresh_node_status",
-            "requesting_agent": "pytest-manual-ops",
+            "requesting_agent": "codex-manual-ops",
             "note": "manual action note",
         },
     )
@@ -521,11 +577,13 @@ def test_manual_action_refresh_node_status_writes_receipt(monkeypatch, tmp_path)
     json_path = Path(body["json_path"])
     receipt = json.loads(json_path.read_text(encoding="utf-8"))
     assert receipt["task"] == "manual_ops_action"
-    assert receipt["requesting_agent"] == "pytest-manual-ops"
+    assert receipt["requesting_agent"] == "codex-manual-ops"
     assert receipt["review_required"] is False
     assert receipt["metadata"]["action"] == "refresh_node_status"
     assert receipt["metadata"]["manual_only"] is True
     assert receipt["metadata"]["note"] == "manual action note"
+    assert receipt["metadata"]["policy"]["surface"] == "codex"
+    assert receipt["metadata"]["policy"]["decision"] == "allow_with_receipt"
     assert "super-secret-openrouter" not in response.text
     assert "super-secret-openrouter" not in json.dumps(receipt)
 
@@ -539,7 +597,7 @@ def test_manual_action_sync_keep_health_records_files_changed(monkeypatch, tmp_p
 
     response = client.post(
         "/ops/actions/run",
-        json={"action": "sync_keep_health", "requesting_agent": "pytest-manual-sync"},
+        json={"action": "sync_keep_health", "requesting_agent": "codex-manual-sync"},
     )
 
     assert response.status_code == 200
@@ -553,12 +611,27 @@ def test_manual_action_sync_keep_health_records_files_changed(monkeypatch, tmp_p
 
 
 def test_manual_action_unknown_is_safe(monkeypatch, tmp_path):
-    monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("RECEIPTS_DIR", str(receipts))
 
-    response = client.post("/ops/actions/run", json={"action": "turn_on_runner"})
+    response = client.post(
+        "/ops/actions/run",
+        json={"action": "turn_on_runner", "requesting_agent": "codex-denied-op"},
+    )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "unknown manual action: turn_on_runner"
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert detail["decision"] == "deny"
+    assert detail["operation"] == "turn_on_runner"
+    assert detail["receipt_id"].startswith("ops-policy-action-turn-on-runner-")
+    paths = list(receipts.rglob("ops-policy-action-turn-on-runner-*.json"))
+    assert len(paths) == 1
+    receipt = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert receipt["task"] == "ops_policy_decision"
+    assert receipt["requesting_agent"] == "codex-denied-op"
+    assert receipt["review_required"] is True
+    assert receipt["metadata"]["policy_decision"] == "deny"
+    assert receipt["metadata"]["allowed"] is False
 
 
 def test_system_probe_exposure_and_recent_ops(monkeypatch, tmp_path):
@@ -569,7 +642,7 @@ def test_system_probe_exposure_and_recent_ops(monkeypatch, tmp_path):
 
     probe = client.post(
         "/ops/probes/run",
-        json={"probe": "exposure_config", "requesting_agent": "pytest-probe"},
+        json={"probe": "exposure_config", "requesting_agent": "codex-probe"},
     )
     recent = client.get("/ops/recent?limit=5")
 
@@ -599,7 +672,7 @@ def test_system_probe_model_route_uses_self_url_without_returning_content(monkey
 
         async def post(self, url, headers=None, json=None):
             assert url == "http://homestead-api:8000/model/route"
-            assert headers["x-homestead-surface"] == "pytest-model-probe"
+            assert headers["x-homestead-surface"] == "codex-model-probe"
             assert json["max_tokens"] == 40
             return httpx.Response(
                 200,
@@ -619,7 +692,7 @@ def test_system_probe_model_route_uses_self_url_without_returning_content(monkey
 
     response = client.post(
         "/ops/probes/run",
-        json={"probe": "model_route", "requesting_agent": "pytest-model-probe", "max_tokens": 40},
+        json={"probe": "model_route", "requesting_agent": "codex-model-probe", "max_tokens": 40},
     )
 
     assert response.status_code == 200
@@ -654,7 +727,7 @@ def test_system_probe_failure_enters_review_queue(monkeypatch, tmp_path):
 
     probe = client.post(
         "/ops/probes/run",
-        json={"probe": "model_route", "requesting_agent": "pytest-fail-probe"},
+        json={"probe": "model_route", "requesting_agent": "codex-fail-probe"},
     )
     review = client.get("/receipts/review?limit=5")
 

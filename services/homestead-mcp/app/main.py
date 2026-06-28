@@ -85,6 +85,21 @@ TOOLS = [
         "input_schema": {},
     },
     {
+        "name": "homestead.ops_policy",
+        "description": "Return the manual ops policy gate configuration.",
+        "input_schema": {},
+    },
+    {
+        "name": "homestead.check_ops_policy",
+        "description": "Check whether a requesting surface may run a manual action or system probe.",
+        "input_schema": {
+            "operation_type": "action or probe string",
+            "operation": "string",
+            "requesting_agent": "string optional",
+            "surface": "string optional",
+        },
+    },
+    {
         "name": "homestead.list_manual_ops",
         "description": "List manual-only Homestead actions and system probes.",
         "input_schema": {},
@@ -128,7 +143,12 @@ def api_url() -> str:
 
 async def api_request(method: str, path: str, json_body: dict[str, Any] | None = None) -> Any:
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.request(method, f"{api_url()}{path}", json=json_body)
+        response = await client.request(
+            method,
+            f"{api_url()}{path}",
+            json=json_body,
+            headers={"x-homestead-surface": "mcp"},
+        )
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
@@ -192,6 +212,10 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         return await api_request("GET", "/os/context")
     if tool == "homestead.os_capabilities":
         return await api_request("GET", "/os/capabilities")
+    if tool == "homestead.ops_policy":
+        return await api_request("GET", "/ops/policy")
+    if tool == "homestead.check_ops_policy":
+        return await api_request("POST", "/ops/policy/check", arguments)
     if tool == "homestead.list_manual_ops":
         return await api_request("GET", "/ops/actions")
     if tool == "homestead.run_manual_action":
@@ -202,6 +226,7 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
         limit = int(arguments.get("limit", 20))
         return await api_request("GET", f"/ops/recent?limit={limit}")
     if tool == "homestead.sync_keep_health":
-        return await api_request("POST", "/keep/health/sync", arguments)
+        payload = {"action": "sync_keep_health", **arguments}
+        return await api_request("POST", "/ops/actions/run", payload)
 
     raise HTTPException(status_code=404, detail=f"unknown tool: {tool}")
