@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="Homestead Private OS API", version="0.1.0")
 STARTED_AT = time.time()
+EXCLUDED_TOP_LEVEL_KEEP_NOTES = {"AGENTS2.md", "CODEX-HANDOFF.md", "keeper-command-protocol.md"}
 
 
 def repo_path() -> Path:
@@ -90,9 +91,16 @@ def markdown_files(root: Path) -> list[Path]:
             continue
         if any(part in {"_raw", "node_modules", ".venv", "venv"} for part in path.parts):
             continue
+        if path.parent == root and path.name in EXCLUDED_TOP_LEVEL_KEEP_NOTES:
+            continue
         if path.is_file():
             files.append(path)
     return sorted(files)
+
+
+def is_excluded_top_level_keep_note(path: Path) -> bool:
+    root = repo_path()
+    return path.parent == root and path.name in EXCLUDED_TOP_LEVEL_KEEP_NOTES
 
 
 def snippet_for(text: str, query: str, max_chars: int = 320) -> str:
@@ -3560,6 +3568,8 @@ async def model_route(request: ModelRouteRequest, http_request: Request) -> dict
 @app.post("/read-concept")
 def read_concept(request: ReadConceptRequest) -> dict[str, Any]:
     path = safe_relative_path(request.path.lstrip("/"))
+    if is_excluded_top_level_keep_note(path):
+        raise HTTPException(status_code=404, detail=f"file not found: {request.path}")
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"file not found: {request.path}")
     if path.suffix.lower() != ".md":

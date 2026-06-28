@@ -149,6 +149,32 @@ def test_keep_concept_index_search_and_read(monkeypatch, tmp_path):
     assert "command sessions" in read.json()["content"]
 
 
+def test_keep_concepts_exclude_adam_working_notes(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    monkeypatch.setenv("HOMESTEAD_REPO_PATH", str(tmp_path))
+    note_paths = []
+    for name in ["AGENTS2.md", "CODEX-HANDOFF.md", "keeper-command-protocol.md"]:
+        path = tmp_path / name
+        path.write_text(f"# {name}\n\nAdam private scratch marker never-index-this-note.\n", encoding="utf-8")
+        note_paths.append(path)
+
+    listed = client.get("/keep/concepts")
+    searched = client.post("/keep/concepts/search", json={"query": "never-index-this-note", "max_results": 10})
+    old_read = client.post("/read-concept", json={"path": "/AGENTS2.md"})
+    direct_id = main.concept_id_for_path(note_paths[0])
+    direct_read = client.get(f"/keep/concepts/{direct_id}")
+
+    assert listed.status_code == 200
+    listed_paths = {concept["source_keep_path"] for concept in listed.json()["concepts"]}
+    assert "/AGENTS2.md" not in listed_paths
+    assert "/CODEX-HANDOFF.md" not in listed_paths
+    assert "/keeper-command-protocol.md" not in listed_paths
+    assert searched.status_code == 200
+    assert searched.json()["count"] == 0
+    assert old_read.status_code == 404
+    assert direct_read.status_code == 404
+
+
 def test_receipt_create_is_append_only(monkeypatch, tmp_path):
     monkeypatch.setenv("RECEIPTS_DIR", str(tmp_path / "receipts"))
     payload = {

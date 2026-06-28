@@ -333,7 +333,11 @@ async def dispatch(tool: str, arguments: dict[str, Any]) -> Any:
                 raise HTTPException(status_code=400, detail="project_id must be a slug")
             query.append(f"project_id={quote(project_id.strip().lower(), safe='')}")
         if "limit" in arguments:
-            query.append(f"limit={int(arguments.get('limit'))}")
+            try:
+                limit = int(arguments.get("limit"))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="limit must be an integer") from exc
+            query.append(f"limit={limit}")
         suffix = "?" + "&".join(query) if query else ""
         return await api_request("GET", f"/keep/concepts{suffix}")
     if tool == "homestead.keep_concept_search":

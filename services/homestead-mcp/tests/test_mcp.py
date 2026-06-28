@@ -379,3 +379,13 @@ def test_keep_concept_read_rejects_bad_concept_id():
     assert missing.json()["detail"] == "concept_id is required"
     assert bad.status_code == 400
     assert bad.json()["detail"] == "concept_id is required"
+
+
+def test_keep_concepts_rejects_bad_limit():
+    bad = client.post(
+        "/call",
+        json={"tool": "homestead.keep_concepts", "arguments": {"limit": "many"}},
+    )
+
+    assert bad.status_code == 400
+    assert bad.json()["detail"] == "limit must be an integer"
