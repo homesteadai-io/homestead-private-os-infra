@@ -200,6 +200,21 @@ Verify Langfuse variable names without printing secret values:
 grep -E '^(LANGFUSE_ENABLED|LANGFUSE_HOST|LANGFUSE_PUBLIC_KEY|LANGFUSE_SECRET_KEY|LANGFUSE_ENVIRONMENT|LANGFUSE_RELEASE)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
 ```
 
+Optional model-route receipts write append-only metadata for `/model/route` calls. They are disabled by default and must fail open if the receipt path is unavailable.
+
+```bash
+MODEL_ROUTE_RECEIPTS_ENABLED=false
+MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT=false
+```
+
+Keep content capture disabled unless Adam explicitly chooses it. Default receipts record route, requested/model used, latency, ok/error, token usage, and Langfuse trace id when available, without storing full prompt or assistant content.
+
+Verify receipt variable names without printing values:
+
+```bash
+grep -E '^(MODEL_ROUTE_RECEIPTS_ENABLED|MODEL_ROUTE_RECEIPTS_INCLUDE_CONTENT)=' /opt/homestead/secrets/runtime.env | sed 's/=.*/=<set>/'
+```
+
 ## Preflight
 
 ```bash
