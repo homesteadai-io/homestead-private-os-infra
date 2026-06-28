@@ -217,6 +217,21 @@ class SessionEndRequest(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+class OutputCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    summary: str = Field(..., min_length=1, max_length=4000)
+    project_id: str = "homestead-private-os"
+    slug: str | None = Field(default=None, max_length=120)
+    command_id: str | None = None
+    session_id: str | None = None
+    created_by: str = "unknown"
+    handoff: str | None = Field(default=None, max_length=8000)
+    capsule: str | None = Field(default=None, max_length=8000)
+    next_ai_prompt: str | None = Field(default=None, max_length=4000)
+    okf: dict[str, Any] = Field(default_factory=dict)
+    pam: dict[str, Any] = Field(default_factory=dict)
+
+
 def clean_run_id(value: str | None) -> str:
     raw = value or f"run-{uuid4().hex[:12]}"
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-._")
@@ -461,6 +476,7 @@ POLICY_ALLOWED_PROBES = {
 }
 POLICY_ALLOWED_COMMANDS = {"create", "update"}
 POLICY_ALLOWED_SESSIONS = {"start", "end"}
+POLICY_ALLOWED_OUTPUTS = {"write"}
 POLICY_UNKNOWN_SURFACE_PROBES = {"node_status"}
 POLICY_SENSITIVE_OPERATIONS = {
     "change_runtime_config",
@@ -554,6 +570,30 @@ PROJECT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 COMMAND_STATUSES = {"new", "claimed", "working", "needs_review", "done", "blocked", "cancelled"}
 COMMAND_ID_RE = re.compile(r"cmd-[a-f0-9]{8}")
 SESSION_ID_RE = re.compile(r"session-[a-f0-9]{8}")
+OUTPUT_ID_RE = re.compile(r"([a-z0-9][a-z0-9-]*)--(\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*)")
+OUTPUT_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+SECRET_VALUE_RE = re.compile(
+    r"(sk-[A-Za-z0-9_-]{8,}|sk-or-[A-Za-z0-9_-]{8,}|"
+    r"(?:api[_-]?key|secret|token|password)\s*[:=]\s*[^,\s]+)",
+    re.IGNORECASE,
+)
+FORBIDDEN_OUTPUT_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "completion",
+    "completion_capture",
+    "messages",
+    "password",
+    "prompt",
+    "prompt_capture",
+    "raw_completion",
+    "raw_env",
+    "raw_prompt",
+    "secret",
+    "token",
+    "transcript",
+}
 
 
 def normalize_policy_token(value: str | None) -> str:
@@ -628,6 +668,7 @@ def ops_policy_payload() -> dict[str, Any]:
                 "probes": sorted(POLICY_ALLOWED_PROBES),
                 "commands": sorted(POLICY_ALLOWED_COMMANDS),
                 "sessions": sorted(POLICY_ALLOWED_SESSIONS),
+                "outputs": sorted(POLICY_ALLOWED_OUTPUTS),
                 "decision": "allow_with_receipt",
             },
             {
@@ -636,6 +677,7 @@ def ops_policy_payload() -> dict[str, Any]:
                 "probes": sorted(POLICY_ALLOWED_PROBES),
                 "commands": sorted(POLICY_ALLOWED_COMMANDS),
                 "sessions": sorted(POLICY_ALLOWED_SESSIONS),
+                "outputs": sorted(POLICY_ALLOWED_OUTPUTS),
                 "decision": "allow_with_receipt",
             },
             {
@@ -644,6 +686,7 @@ def ops_policy_payload() -> dict[str, Any]:
                 "probes": sorted(POLICY_ALLOWED_PROBES),
                 "commands": sorted(POLICY_ALLOWED_COMMANDS),
                 "sessions": sorted(POLICY_ALLOWED_SESSIONS),
+                "outputs": sorted(POLICY_ALLOWED_OUTPUTS),
                 "decision": "allow_with_receipt",
             },
             {
@@ -652,6 +695,7 @@ def ops_policy_payload() -> dict[str, Any]:
                 "probes": sorted(POLICY_UNKNOWN_SURFACE_PROBES),
                 "commands": [],
                 "sessions": [],
+                "outputs": [],
                 "decision": "allow_with_receipt",
             },
         ],
@@ -697,8 +741,8 @@ def check_ops_policy_payload(
         http_request=http_request,
     )
 
-    if operation_type not in {"action", "probe", "command", "session"}:
-        raise HTTPException(status_code=400, detail="operation_type must be action, probe, command, or session")
+    if operation_type not in {"action", "probe", "command", "session", "output"}:
+        raise HTTPException(status_code=400, detail="operation_type must be action, probe, command, session, or output")
     if operation in POLICY_DISABLED_OPERATIONS:
         return policy_decision_response(
             surface=surface,
@@ -721,6 +765,7 @@ def check_ops_policy_payload(
         "probe": POLICY_ALLOWED_PROBES,
         "command": POLICY_ALLOWED_COMMANDS,
         "session": POLICY_ALLOWED_SESSIONS,
+        "output": POLICY_ALLOWED_OUTPUTS,
     }
     allowed_operations = allowed_by_type[operation_type]
     if surface == "unknown":
@@ -1295,6 +1340,273 @@ def command_session_summary() -> dict[str, Any]:
     }
 
 
+def slugify(value: str, fallback: str = "output") -> str:
+    raw = (value or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    return slug or fallback
+
+
+def validate_output_slug(value: str) -> str:
+    normalized = slugify(value)
+    if not OUTPUT_SLUG_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="slug must contain lowercase letters, numbers, or hyphens")
+    return normalized[:120].strip("-") or "output"
+
+
+def validate_output_id(value: str) -> tuple[str, str]:
+    normalized = (value or "").strip().lower()
+    match = OUTPUT_ID_RE.fullmatch(normalized)
+    if not match:
+        raise HTTPException(status_code=400, detail="output_id contains unsupported characters")
+    project_id, bundle_slug = match.groups()
+    validate_project_id(project_id)
+    return project_id, bundle_slug
+
+
+def output_root() -> Path:
+    return safe_relative_path("System Outputs")
+
+
+def output_bundle_path(project_id: str, bundle_slug: str) -> Path:
+    return safe_relative_path(f"System Outputs/{project_id}/{bundle_slug}")
+
+
+def check_output_content_safe(value: Any, path: str = "output") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key)
+            normalized_key = normalize_policy_token(key_text)
+            if normalized_key in FORBIDDEN_OUTPUT_KEYS and normalized_key != "next_ai_prompt":
+                raise HTTPException(status_code=400, detail=f"{path}.{key_text} is not allowed in output capsules")
+            check_output_content_safe(child, f"{path}.{key_text}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            check_output_content_safe(child, f"{path}[{index}]")
+        return
+    if isinstance(value, str) and SECRET_VALUE_RE.search(value):
+        raise HTTPException(status_code=400, detail="output capsule content appears to contain a secret")
+
+
+def output_summary_from_capsule(capsule_path: Path) -> dict[str, Any]:
+    data = read_receipt_json(capsule_path)
+    return {
+        "output_id": data.get("output_id"),
+        "title": data.get("title"),
+        "summary": data.get("summary"),
+        "project_id": data.get("project_id"),
+        "command_id": data.get("command_id"),
+        "session_id": data.get("session_id"),
+        "created_at": data.get("created_at"),
+        "created_by": data.get("created_by"),
+        "relative_path": data.get("relative_path"),
+    }
+
+
+def output_capsules_payload() -> dict[str, Any]:
+    root = output_root()
+    if not root.exists():
+        return {"generated_at": utc_now(), "count": 0, "outputs": []}
+    capsule_paths = sorted(
+        (path for path in root.glob("*/*/capsule.json") if not path.parent.name.startswith(".")),
+        key=lambda item: str(item),
+        reverse=True,
+    )
+    outputs = [output_summary_from_capsule(path) for path in capsule_paths]
+    outputs.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("output_id") or "")), reverse=True)
+    return {"generated_at": utc_now(), "count": len(outputs), "outputs": outputs}
+
+
+def output_read_payload(output_id: str) -> dict[str, Any]:
+    project_id, bundle_slug = validate_output_id(output_id)
+    bundle_dir = output_bundle_path(project_id, bundle_slug)
+    capsule_json = bundle_dir / "capsule.json"
+    if not capsule_json.exists():
+        raise HTTPException(status_code=404, detail="output not found")
+
+    def read_text(name: str) -> str:
+        return (bundle_dir / name).read_text(encoding="utf-8", errors="replace")
+
+    return {
+        "generated_at": utc_now(),
+        "output_id": output_id,
+        "summary": output_summary_from_capsule(capsule_json),
+        "handoff": json.loads((bundle_dir / "handoff.json").read_text(encoding="utf-8")),
+        "capsule": json.loads(capsule_json.read_text(encoding="utf-8")),
+        "markdown": {
+            "index.md": read_text("index.md"),
+            "HANDOFF.md": read_text("HANDOFF.md"),
+            "CAPSULE.md": read_text("CAPSULE.md"),
+            "next-ai-prompt.md": read_text("next-ai-prompt.md"),
+        },
+        "files": sorted(path.name for path in bundle_dir.iterdir()),
+    }
+
+
+def output_capsules_summary() -> dict[str, Any]:
+    payload = output_capsules_payload()
+    return {
+        "count": payload["count"],
+        "root": "/System Outputs",
+        "write_policy": "/docs/OUTPUT-CAPSULE-WRITE-POLICY.md",
+    }
+
+
+def output_handoff_markdown(metadata: dict[str, Any], body: str | None) -> str:
+    body_text = body or metadata["summary"]
+    return "\n".join(
+        [
+            f"# {metadata['title']}",
+            "",
+            f"- output_id: {metadata['output_id']}",
+            f"- project_id: {metadata['project_id']}",
+            f"- command_id: {metadata.get('command_id') or 'none'}",
+            f"- session_id: {metadata.get('session_id') or 'none'}",
+            f"- created_at: {metadata['created_at']}",
+            "",
+            "## Handoff",
+            "",
+            body_text,
+            "",
+        ]
+    )
+
+
+def output_index_markdown(metadata: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            f"# {metadata['title']}",
+            "",
+            metadata["summary"],
+            "",
+            "## Capsule",
+            "",
+            f"- output_id: {metadata['output_id']}",
+            f"- project_id: {metadata['project_id']}",
+            f"- command_id: {metadata.get('command_id') or 'none'}",
+            f"- session_id: {metadata.get('session_id') or 'none'}",
+            f"- path: {metadata['relative_path']}",
+            "",
+            "## Files",
+            "",
+            "- [HANDOFF.md](HANDOFF.md)",
+            "- [CAPSULE.md](CAPSULE.md)",
+            "- [next-ai-prompt.md](next-ai-prompt.md)",
+            "- [handoff.json](handoff.json)",
+            "- [capsule.json](capsule.json)",
+            "- [okf/](okf/)",
+            "- [pam/](pam/)",
+            "",
+        ]
+    )
+
+
+def output_capsule_markdown(metadata: dict[str, Any], body: str | None) -> str:
+    body_text = body or metadata["summary"]
+    return "\n".join(
+        [
+            f"# Capsule: {metadata['title']}",
+            "",
+            metadata["summary"],
+            "",
+            "## Continuation Context",
+            "",
+            body_text,
+            "",
+            "## Boundaries",
+            "",
+            "- Adam remains the authority.",
+            "- This capsule is not a runner, scheduler, dashboard, alert, workflow engine, or autonomous claim.",
+            "- Receipts remain separate system behavior proof.",
+            "",
+        ]
+    )
+
+
+def next_ai_prompt_markdown(metadata: dict[str, Any], body: str | None) -> str:
+    body_text = body or (
+        f"Continue from output capsule {metadata['output_id']} for project {metadata['project_id']}. "
+        "Read HANDOFF.md and CAPSULE.md first. Preserve the no-autonomy boundaries."
+    )
+    return body_text.rstrip() + "\n"
+
+
+def create_output_payload(request: OutputCreateRequest, policy_decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    check_output_content_safe(request.model_dump())
+    project_id = validate_project_id(request.project_id)
+    if request.command_id:
+        validate_command_id(request.command_id)
+        commands, _command_events = command_state()
+        if request.command_id not in commands:
+            raise HTTPException(status_code=404, detail="command not found")
+    if request.session_id:
+        validate_session_id(request.session_id)
+        sessions, _session_events = session_state()
+        if request.session_id not in sessions:
+            raise HTTPException(status_code=404, detail="session not found")
+
+    date_part = datetime.now(UTC).date().isoformat()
+    slug = validate_output_slug(request.slug or request.title)
+    bundle_slug = f"{date_part}-{slug}"
+    output_id = f"{project_id}--{bundle_slug}"
+    bundle_dir = output_bundle_path(project_id, bundle_slug)
+    if bundle_dir.exists():
+        raise HTTPException(status_code=409, detail="output bundle already exists")
+    temp_dir = output_bundle_path(project_id, f".{bundle_slug}.tmp-{uuid4().hex[:8]}")
+
+    created_at = utc_now()
+    relative_path = f"/System Outputs/{project_id}/{bundle_slug}"
+    metadata = {
+        "output_id": output_id,
+        "title": request.title.strip(),
+        "summary": request.summary,
+        "project_id": project_id,
+        "command_id": request.command_id,
+        "session_id": request.session_id,
+        "created_at": created_at,
+        "created_by": request.created_by,
+        "relative_path": relative_path,
+        "write_policy": "/docs/OUTPUT-CAPSULE-WRITE-POLICY.md",
+        "content_policy": {
+            "prompt_capture_default": False,
+            "completion_capture_default": False,
+            "secret_values": "never_write",
+            "raw_env": "never_write",
+            "private_model_transcript": "never_write_by_default",
+        },
+        "forbidden_capabilities": [
+            "runner",
+            "scheduler",
+            "dashboard",
+            "local_mode",
+            "local_model_routing",
+            "alerts",
+            "workflow_engine",
+            "autonomous_command_claiming",
+        ],
+    }
+    if policy_decision:
+        metadata["policy"] = policy_receipt_metadata(policy_decision)
+
+    handoff_json = {**metadata, "handoff": request.handoff or request.summary}
+    capsule_json = {**metadata, "capsule": request.capsule or request.summary, "okf": request.okf, "pam": request.pam}
+
+    temp_dir.mkdir(parents=True, exist_ok=False)
+    (temp_dir / "okf").mkdir()
+    (temp_dir / "pam").mkdir()
+    (temp_dir / "index.md").write_text(output_index_markdown(metadata), encoding="utf-8")
+    (temp_dir / "HANDOFF.md").write_text(output_handoff_markdown(metadata, request.handoff), encoding="utf-8")
+    (temp_dir / "handoff.json").write_text(json.dumps(handoff_json, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (temp_dir / "CAPSULE.md").write_text(output_capsule_markdown(metadata, request.capsule), encoding="utf-8")
+    (temp_dir / "capsule.json").write_text(json.dumps(capsule_json, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (temp_dir / "next-ai-prompt.md").write_text(next_ai_prompt_markdown(metadata, request.next_ai_prompt), encoding="utf-8")
+    (temp_dir / "okf" / "README.md").write_text("# OKF\n\nReserved for OKF bundle material.\n", encoding="utf-8")
+    (temp_dir / "pam" / "README.md").write_text("# PAM\n\nReserved for PAM continuation material.\n", encoding="utf-8")
+    temp_dir.rename(bundle_dir)
+
+    return output_read_payload(output_id)
+
+
 def review_queue_summary(limit: int = 10) -> dict[str, Any]:
     summaries = sorted_receipt_summaries(all_receipt_json_files())
     review_items = [receipt_review_item(summary) for summary in summaries if receipt_review_reasons(summary)]
@@ -1340,6 +1652,8 @@ def agent_boot_payload() -> dict[str, Any]:
         "read_first": [
             "/docs/RUNBOOK.md",
             "/docs/ACCEPTANCE-TESTS.md",
+            "/docs/OUTPUT-CAPSULE-WRITE-POLICY.md",
+            "/docs/HANDOFF-OUTPUT-CAPSULES.md",
             "/docs/HANDOFF-COMMAND-SESSIONS.md",
             "/docs/HANDOFF-AGENT-BOOT-PROJECTS.md",
             "/docs/HANDOFF-MANUAL-OPS-PROBES.md",
@@ -1363,6 +1677,7 @@ def agent_boot_payload() -> dict[str, Any]:
             "recent": recent_ops,
         },
         "command_sessions": command_session_summary(),
+        "output_capsules": output_capsules_summary(),
         "disabled": {
             "runner": capabilities["entries"]["runner"],
             "scheduler_enabled": False,
@@ -1446,6 +1761,28 @@ def capability_registry_payload() -> dict[str, Any]:
             "runner_enabled": False,
             "scheduler_enabled": False,
             "state": command_session_summary(),
+        },
+        "output_capsules": {
+            "enabled": True,
+            "status": "manual_only",
+            "surface": [
+                "/outputs",
+                "/outputs/{output_id}",
+                "homestead.outputs_write",
+                "homestead.outputs_list",
+                "homestead.outputs_read",
+            ],
+            "agent_safe": True,
+            "write_access": "approved_keep_output_capsule_lane",
+            "write_policy": "/docs/OUTPUT-CAPSULE-WRITE-POLICY.md",
+            "root": "/System Outputs",
+            "path_shape": "/System Outputs/{project_id}/{YYYY-MM-DD}-{slug}/",
+            "policy_gate": "required",
+            "autonomous_claiming": False,
+            "runner_enabled": False,
+            "scheduler_enabled": False,
+            "content_capture_default": False,
+            "state": output_capsules_summary(),
         },
         "model_route": {
             "enabled": True,
@@ -1614,6 +1951,9 @@ def os_context_payload() -> dict[str, Any]:
             "homestead.session_end",
             "homestead.sessions",
             "homestead.session_read",
+            "homestead.outputs_write",
+            "homestead.outputs_list",
+            "homestead.outputs_read",
             "homestead.ops_policy",
             "homestead.check_ops_policy",
             "homestead.list_manual_ops",
@@ -2204,6 +2544,27 @@ def agent_sessions() -> dict[str, Any]:
 @app.get("/agent/sessions/{session_id}")
 def agent_session_read(session_id: str) -> dict[str, Any]:
     return session_read_payload(session_id)
+
+
+@app.post("/outputs")
+def outputs_write(request: OutputCreateRequest, http_request: Request) -> dict[str, Any]:
+    decision = enforce_ops_policy(
+        operation_type="output",
+        operation="write",
+        requesting_agent=request.created_by,
+        http_request=http_request,
+    )
+    return create_output_payload(request, decision)
+
+
+@app.get("/outputs")
+def outputs_list() -> dict[str, Any]:
+    return output_capsules_payload()
+
+
+@app.get("/outputs/{output_id}")
+def outputs_read(output_id: str) -> dict[str, Any]:
+    return output_read_payload(output_id)
 
 
 @app.post("/keep/health/sync")
