@@ -1866,31 +1866,52 @@ def agent_boot_payload() -> dict[str, Any]:
                     "id": "homestead_identity",
                     "project_id": "homestead-private-os",
                     "question": "What is Homestead, and what should an agent read first before working?",
+                    "expected_concept_ids": [
+                        "concept-deed-571b2b47",
+                        "concept-homestead-cdd07bcc",
+                    ],
                 },
                 {
                     "id": "homestead_disabled_capabilities",
                     "project_id": "homestead-private-os",
                     "question": "What is the current Homestead operating mode, and which capabilities are disabled?",
+                    "expected_concept_ids": [
+                        "concept-deed-571b2b47",
+                        "concept-system-receipts-homestead-health-homestead-latest-7d8b5c17",
+                    ],
                 },
                 {
                     "id": "homestead_output_capsules",
                     "project_id": "homestead-private-os",
                     "question": "What does Homestead use output capsules for, and where are they stored?",
+                    "expected_concept_ids": [
+                        "concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-20260628-222457-index-c40f3eb1",
+                    ],
                 },
                 {
                     "id": "creative_app_purpose",
                     "project_id": "creative-coatings",
                     "question": "What is the Creative Coatings powder scheduler, and what problem does it solve?",
+                    "expected_concept_ids": [
+                        "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
+                    ],
                 },
                 {
                     "id": "creative_two_inbox",
                     "project_id": "creative-coatings",
                     "question": "What is the difference between Core Dump Inbox and Schedule Intake Inbox?",
+                    "expected_concept_ids": [
+                        "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
+                    ],
                 },
                 {
                     "id": "project_separation",
                     "project_id": "creative-coatings",
                     "question": "Is Creative Coatings part of the Homestead runtime, or is it a separate project context?",
+                    "expected_concept_ids": [
+                        "concept-deed-571b2b47",
+                        "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
+                    ],
                 },
             ],
             "pass_reply_must": [
