@@ -558,10 +558,19 @@ def test_agent_boot_and_projects_are_agent_safe_without_secrets(monkeypatch, tmp
     assert body["concepts"]["creative_coatings_seed"][0]["project_id"] == "creative-coatings"
     assert body["cold_boot_test"]["status"] == "requires_live_proof_across_homestead_private_os_and_creative_coatings"
     assert len(body["cold_boot_test"]["questions"]) == 6
+    questions = {item["id"]: item for item in body["cold_boot_test"]["questions"]}
     assert {item["project_id"] for item in body["cold_boot_test"]["questions"]} == {
         "homestead-private-os",
         "creative-coatings",
     }
+    assert questions["homestead_disabled_capabilities"]["expected_concept_ids"] == [
+        "concept-deed-571b2b47",
+        "concept-system-receipts-homestead-health-homestead-latest-7d8b5c17",
+    ]
+    assert questions["project_separation"]["expected_concept_ids"] == [
+        "concept-deed-571b2b47",
+        "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
+    ]
     assert body["capabilities"]["entries"]["agent_boot"]["enabled"] is True
     assert body["capabilities"]["entries"]["keep_concepts"]["enabled"] is True
     assert body["capabilities"]["entries"]["keep_concepts"]["write_access"] == "none"
