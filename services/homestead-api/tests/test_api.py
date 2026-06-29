@@ -567,10 +567,21 @@ def test_agent_boot_and_projects_are_agent_safe_without_secrets(monkeypatch, tmp
         "concept-deed-571b2b47",
         "concept-system-receipts-homestead-health-homestead-latest-7d8b5c17",
     ]
+    assert "manual-only" in questions["homestead_disabled_capabilities"]["pass_reply_must_include"][0]
+    assert "autonomous claiming are disabled" in questions["homestead_disabled_capabilities"]["pass_reply_must_include"][1]
+    assert (
+        "Core Dump Inbox is for clean plant/open-order data"
+        in questions["creative_two_inbox"]["pass_reply_must_include"][0]
+    )
+    assert (
+        "Schedule Intake Inbox is for messy human scheduling inputs"
+        in questions["creative_two_inbox"]["pass_reply_must_include"][1]
+    )
     assert questions["project_separation"]["expected_concept_ids"] == [
         "concept-deed-571b2b47",
         "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
     ]
+    assert "not the Homestead runtime" in questions["project_separation"]["pass_reply_must_include"][2]
     assert body["capabilities"]["entries"]["agent_boot"]["enabled"] is True
     assert body["capabilities"]["entries"]["keep_concepts"]["enabled"] is True
     assert body["capabilities"]["entries"]["keep_concepts"]["write_access"] == "none"

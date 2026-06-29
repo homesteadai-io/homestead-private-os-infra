@@ -1870,6 +1870,10 @@ def agent_boot_payload() -> dict[str, Any]:
                         "concept-deed-571b2b47",
                         "concept-homestead-cdd07bcc",
                     ],
+                    "pass_reply_must_include": [
+                        "Homestead is Adam's private operating spine or owned memory system.",
+                        "A fresh agent should read the Deed and active project context before working.",
+                    ],
                 },
                 {
                     "id": "homestead_disabled_capabilities",
@@ -1879,6 +1883,10 @@ def agent_boot_payload() -> dict[str, Any]:
                         "concept-deed-571b2b47",
                         "concept-system-receipts-homestead-health-homestead-latest-7d8b5c17",
                     ],
+                    "pass_reply_must_include": [
+                        "Homestead is manual-only and Adam is the authority.",
+                        "Runner, scheduler, dashboard, alerts, local mode, and autonomous claiming are disabled.",
+                    ],
                 },
                 {
                     "id": "homestead_output_capsules",
@@ -1886,6 +1894,11 @@ def agent_boot_payload() -> dict[str, Any]:
                     "question": "What does Homestead use output capsules for, and where are they stored?",
                     "expected_concept_ids": [
                         "concept-system-outputs-homestead-private-os-2026-06-28-output-capsule-acceptance-20260628-222457-index-c40f3eb1",
+                    ],
+                    "pass_reply_must_include": [
+                        "Output capsules preserve useful work and continuation context.",
+                        "Output capsules live under /System Outputs/{project_id}/{YYYY-MM-DD}-{slug}/.",
+                        "Receipts remain separate proof of system behavior.",
                     ],
                 },
                 {
@@ -1895,6 +1908,11 @@ def agent_boot_payload() -> dict[str, Any]:
                     "expected_concept_ids": [
                         "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
                     ],
+                    "pass_reply_must_include": [
+                        "Creative Coatings is a separate powder-schedule business workflow.",
+                        "It manages a weekly powder board, schedule inbox, core/open-order candidate pool, traveler/photo intake, Add to Schedule, Hot List, and shop handoff.",
+                        "It is not Homestead infrastructure.",
+                    ],
                 },
                 {
                     "id": "creative_two_inbox",
@@ -1902,6 +1920,11 @@ def agent_boot_payload() -> dict[str, Any]:
                     "question": "What is the difference between Core Dump Inbox and Schedule Intake Inbox?",
                     "expected_concept_ids": [
                         "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
+                    ],
+                    "pass_reply_must_include": [
+                        "Core Dump Inbox is for clean plant/open-order data that refreshes the In Process candidate pool.",
+                        "Schedule Intake Inbox is for messy human scheduling inputs such as Monday sheets, traveler photos, hot-list emails, customer notes, screenshots, PDFs, Docs, sheets, and partial files.",
+                        "Core refresh must not wipe schedule-inbox, weekly-board, manual, traveler, or Sent to Shop rows.",
                     ],
                 },
                 {
@@ -1911,6 +1934,11 @@ def agent_boot_payload() -> dict[str, Any]:
                     "expected_concept_ids": [
                         "concept-deed-571b2b47",
                         "concept-system-outputs-creative-coatings-2026-06-28-door-ingest-creative-coatings-capsule-59a7f1b6",
+                    ],
+                    "pass_reply_must_include": [
+                        "Creative Coatings is a separate project context indexed by Homestead.",
+                        "Homestead is the private OS/control spine.",
+                        "Creative Coatings is a powder scheduler/workflow project, not the Homestead runtime.",
                     ],
                 },
             ],
