@@ -117,6 +117,10 @@ Allowed writes include safe policy metadata in bundle JSON. They do not include
 headers, tokens, raw env, prompt captures, completion captures, or private model
 transcript content by default.
 
+Allowed output writes also append an `ops_policy_decision` receipt after the
+bundle is published, so `allow_with_receipt` has a separately readable artifact
+under `/receipts/by-date/{YYYY-MM-DD}` and `/receipts/{YYYY-MM-DD}/{receipt_id}`.
+
 ## Acceptance
 
 Local:
@@ -152,6 +156,7 @@ Expected:
 
 ```text
 POST /api/outputs writes a complete bundle under /System Outputs/{project_id}/{YYYY-MM-DD}-{slug}/
+POST /api/outputs returns a policy_receipt read path and the receipt appears in /api/receipts/by-date/{YYYY-MM-DD}
 GET /api/outputs lists output summaries
 GET /api/outputs/{output_id} reads one output
 MCP tools dispatch to equivalent API routes

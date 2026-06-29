@@ -811,6 +811,11 @@ def test_output_capsule_write_list_read_and_policy(monkeypatch, tmp_path):
     assert body["capsule"]["policy"]["surface"] == "codex"
     assert body["capsule"]["content_policy"]["prompt_capture_default"] is False
     assert body["capsule"]["content_policy"]["completion_capture_default"] is False
+    assert "policy_receipt_error" not in body
+    policy_receipt = body["policy_receipt"]
+    assert policy_receipt["receipt_id"].startswith("ops-policy-output-write-")
+    assert policy_receipt["read_path"] == f"/receipts/{policy_receipt['date']}/{policy_receipt['receipt_id']}"
+    assert policy_receipt["by_date_path"] == f"/receipts/by-date/{policy_receipt['date']}"
 
     bundle_dir = tmp_path / summary["relative_path"].lstrip("/")
     expected = {"index.md", "HANDOFF.md", "handoff.json", "CAPSULE.md", "capsule.json", "next-ai-prompt.md", "okf", "pam"}
@@ -829,6 +834,8 @@ def test_output_capsule_write_list_read_and_policy(monkeypatch, tmp_path):
 
     listed = client.get("/outputs")
     read = client.get(f"/outputs/{output_id}")
+    receipts_by_date = client.get(policy_receipt["by_date_path"])
+    receipt_read = client.get(policy_receipt["read_path"])
     boot = client.get("/agent/boot")
     caps = client.get("/os/capabilities")
 
@@ -841,6 +848,24 @@ def test_output_capsule_write_list_read_and_policy(monkeypatch, tmp_path):
     assert "bundle_path" not in read.json()
     assert "index.md" in read.json()["markdown"]
     assert "Continue from this capsule" in read.json()["markdown"]["next-ai-prompt.md"]
+    assert receipts_by_date.status_code == 200
+    output_receipts = [
+        receipt
+        for receipt in receipts_by_date.json()["receipts"]
+        if receipt["receipt_id"] == policy_receipt["receipt_id"]
+    ]
+    assert len(output_receipts) == 1
+    assert receipt_read.status_code == 200
+    receipt_json = receipt_read.json()["json"]
+    assert receipt_json["task"] == "ops_policy_decision"
+    assert receipt_json["requesting_agent"] == "codex"
+    assert receipt_json["review_required"] is False
+    assert receipt_json["metadata"]["operation_type"] == "output"
+    assert receipt_json["metadata"]["operation"] == "write"
+    assert receipt_json["metadata"]["policy_decision"] == "allow_with_receipt"
+    assert receipt_json["metadata"]["output_id"] == output_id
+    assert receipt_json["metadata"]["output_relative_path"] == summary["relative_path"]
+    assert receipt_json["files_changed"] == [summary["relative_path"]]
     assert boot.json()["output_capsules"]["count"] == 1
     output_caps = caps.json()["entries"]["output_capsules"]
     assert output_caps["enabled"] is True

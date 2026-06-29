@@ -973,9 +973,15 @@ def ops_policy_decision_receipt_payload(
     decision: dict[str, Any],
     requesting_agent: str,
     review_required: bool,
+    actions_taken: list[str] | None = None,
+    files_changed: list[str] | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     operation_type = str(decision.get("operation_type") or "unknown")
     operation = str(decision.get("operation") or "unknown")
+    metadata = policy_receipt_metadata(decision)
+    if extra_metadata:
+        metadata.update(extra_metadata)
     return {
         "run_id": f"ops-policy-{operation_type}-{clean_run_id(operation.replace('_', '-'))}-{uuid4().hex[:8]}",
         "timestamp": utc_now(),
@@ -983,14 +989,15 @@ def ops_policy_decision_receipt_payload(
         "task": "ops_policy_decision",
         "files_read": [],
         "model_used": "not_applicable_v0",
-        "actions_taken": [
+        "actions_taken": actions_taken
+        or [
             f"evaluated ops policy for {operation_type} {operation}",
             "recorded metadata-only policy decision",
         ],
-        "files_changed": [],
+        "files_changed": files_changed or [],
         "review_required": review_required,
         "verdict": "ok" if decision.get("allowed") else "denied",
-        "metadata": policy_receipt_metadata(decision),
+        "metadata": metadata,
     }
 
 
@@ -999,12 +1006,18 @@ def write_ops_policy_decision_receipt(
     decision: dict[str, Any],
     requesting_agent: str,
     review_required: bool,
+    actions_taken: list[str] | None = None,
+    files_changed: list[str] | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     return write_ops_receipt(
         ops_policy_decision_receipt_payload(
             decision=decision,
             requesting_agent=requesting_agent,
             review_required=review_required,
+            actions_taken=actions_taken,
+            files_changed=files_changed,
+            extra_metadata=extra_metadata,
         )
     )
 
@@ -1018,6 +1031,18 @@ def safe_policy_denial_receipt(decision: dict[str, Any], requesting_agent: str) 
         )
     except Exception:
         return {"receipt_error": "policy denial receipt write failed"}
+
+
+def public_receipt_reference(receipt: dict[str, str]) -> dict[str, str]:
+    receipt_id = receipt["receipt_id"]
+    json_path = Path(receipt["json_path"])
+    receipt_date = json_path.parent.name
+    return {
+        "receipt_id": receipt_id,
+        "date": receipt_date,
+        "read_path": f"/receipts/{receipt_date}/{receipt_id}",
+        "by_date_path": f"/receipts/by-date/{receipt_date}",
+    }
 
 
 def node_status_payload() -> dict[str, Any]:
@@ -1756,7 +1781,29 @@ def create_output_payload(request: OutputCreateRequest, policy_decision: dict[st
     (temp_dir / "pam" / "README.md").write_text("# PAM\n\nReserved for PAM continuation material.\n", encoding="utf-8")
     temp_dir.rename(bundle_dir)
 
-    return output_read_payload(output_id)
+    payload = output_read_payload(output_id)
+    if policy_decision and policy_decision.get("receipt_required"):
+        try:
+            receipt = write_ops_policy_decision_receipt(
+                decision=policy_decision,
+                requesting_agent=request.created_by,
+                review_required=False,
+                actions_taken=[
+                    "evaluated ops policy for output write",
+                    "wrote output capsule bundle",
+                    "recorded metadata-only policy decision receipt",
+                ],
+                files_changed=[relative_path],
+                extra_metadata={
+                    "output_id": output_id,
+                    "output_relative_path": relative_path,
+                    "output_title": request.title.strip(),
+                },
+            )
+            payload["policy_receipt"] = public_receipt_reference(receipt)
+        except Exception:
+            payload["policy_receipt_error"] = "output policy receipt write failed"
+    return payload
 
 
 def review_queue_summary(limit: int = 10) -> dict[str, Any]:
